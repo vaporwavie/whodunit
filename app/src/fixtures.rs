@@ -2,7 +2,7 @@
 
 use crate::core::{Core, Dialog, DialogKind, Shared, lock};
 use crate::sessions::Summary;
-use crate::transcript::{Block, Deal, Done, FanAnswer, Item, ToolRun, Transcript};
+use crate::transcript::{Block, Deal, Done, END_TITLE, FanAnswer, Item, ToolRun, Transcript};
 
 fn deal(role: &str, size: &str) -> Option<Deal> {
     Some(Deal {
@@ -72,19 +72,21 @@ pub fn scene_chat(shared: &Shared) {
     sidebar(&mut core);
 }
 
-pub fn scene_rate(shared: &Shared) {
+pub fn scene_end(shared: &Shared) {
     let mut core = lock(shared);
     chat(&mut core);
     sidebar(&mut core);
     core.dialog = Some(Dialog {
         id: "d".into(),
-        title: "How did it go?".into(),
+        title: END_TITLE.into(),
         kind: DialogKind::Select(vec![
-            "nailed it".into(),
-            "needed my fixes".into(),
-            "failed".into(),
+            "5 · nailed it, great".into(),
+            "4 · nailed it, rough edges".into(),
+            "3 · needed small fixes".into(),
+            "2 · needed big fixes".into(),
+            "1 · failed".into(),
         ]),
-        highlight: 0,
+        highlight: Some(1),
         generation: 1,
     });
 }
@@ -94,13 +96,15 @@ pub fn scene_reveal(shared: &Shared) {
     chat(&mut core);
     core.t.week.done = Some(Done { score: 5 });
     sidebar(&mut core);
-    core.toast("It was Opus 5.5. Logged nailed it, 5/5.", "info");
+    core.toast(
+        "It was Opus 5.5, dealt as errand-boy. Logged 5/5, nailed it.",
+        "info",
+    );
 }
 
 pub fn scene_fanout(shared: &Shared) {
     let mut core = lock(shared);
     core.t.items = vec![Item::Fanout {
-        role: "scribe".into(),
         prompt: Some("Write a two-line release note for the scoreboard page.".into()),
         answers: vec![
             FanAnswer { label: "A".into(), ok: true, error: None, text: "**The scoreboard is here.** Every rated task, grouped by role, so you can see which agent earned its seat.".into() },
@@ -114,7 +118,7 @@ pub fn scene_fanout(shared: &Shared) {
         id: "d".into(),
         title: "Which answer is best?".into(),
         kind: DialogKind::Select(vec!["A".into(), "B".into(), "C".into()]),
-        highlight: 0,
+        highlight: Some(0),
         generation: 1,
     });
     sidebar(&mut core);

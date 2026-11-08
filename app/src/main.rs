@@ -62,7 +62,7 @@ fn main() {
         families: rune_theme_opencode::FAMILIES,
         scenes: &[
             ("chat", |s: &mut FullUi| fixtures::scene_chat(&s.core)),
-            ("rate", |s: &mut FullUi| fixtures::scene_rate(&s.core)),
+            ("end", |s: &mut FullUi| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut FullUi| fixtures::scene_reveal(&s.core)),
             ("fanout", |s: &mut FullUi| fixtures::scene_fanout(&s.core)),
             ("run", |s: &mut FullUi| fixtures::scene_run(&s.core)),

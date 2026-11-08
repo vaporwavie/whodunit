@@ -15,7 +15,7 @@ use rune_kit::shell::{
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextArea, popover};
 
 use crate::config;
-use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, start_pi};
+use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key, start_pi};
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::transcript::Item;
@@ -121,10 +121,7 @@ pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
         Key::Escape => core.answer_dialog(None),
         Key::Up if select => core.move_highlight(-1),
         Key::Down if select => core.move_highlight(1),
-        Key::Enter if select => {
-            let highlight = dialog.highlight;
-            core.pick(highlight);
-        }
+        Key::Enter if select => core.commit(),
         Key::Enter if confirm => core.answer_dialog(Some(serde_json::json!(true))),
         Key::Text(t) if confirm && empty_field && (t == "y" || t == "n") => {
             core.answer_dialog(Some(serde_json::json!(t == "y")))
@@ -133,6 +130,16 @@ pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
             let DialogKind::Select(options) = &dialog.kind else {
                 return false;
             };
+            if dialog.ends_run() {
+                let Some(index) = options
+                    .iter()
+                    .position(|o| score_key(o).is_some_and(|(key, _)| key == t))
+                else {
+                    return false;
+                };
+                core.choose(index);
+                return true;
+            }
             let by_number = t
                 .parse::<usize>()
                 .ok()
@@ -225,7 +232,7 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('d') {
-        lock(&s.core).rate();
+        lock(&s.core).end_run();
         return true;
     }
     if ev.is_command('o') {
@@ -457,14 +464,18 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
             "Describe one task. Jev picks the role, the deck picks the agent.",
             "⏎ sends",
         ),
-        (Some(_), _) if core.t.week.done.is_some() => ("Rated. ⌘N for the next task.", ""),
-        (Some(_), _) => ("Reply…", "/done rates · !cmd runs a shell command"),
+        (Some(_), _) if core.t.week.done.is_some() => {
+            ("This run has ended. ⌘N for the next task.", "")
+        }
+        (Some(_), _) => ("Reply…", "⌘D ends the run · !cmd runs a shell command"),
     };
+    let sealed = core.t.week.done.is_some();
     let field = TextArea::new(&s.composer)
         .plain()
         .placeholder(placeholder)
         .width(None)
         .auto_grow(2, 10)
+        .disabled(sealed)
         .on_edit(|s: &mut FullUi| &mut s.composer)
         .on_submit(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false))
         .on_key(composer_key)
@@ -506,7 +517,7 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
                     .color(c.text_base),
             )
             .child(
-                text("You won’t see which agent you were dealt until you rate the run with /done.")
+                text("The role and the agent stay hidden until you end the run with ⌘D.")
                     .font(k.ty.small)
                     .color(c.text_muted),
             )
@@ -580,19 +591,19 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
     }
     if core.t.week.unrated() {
         trailing = trailing.child(
-            Button::new("Rate")
-                .variant(if core.can_rate() {
+            Button::new("End run")
+                .variant(if core.can_end_run() {
                     ButtonVariant::Contrast
                 } else {
                     ButtonVariant::Ghost
                 })
-                .disabled(!core.can_rate())
+                .disabled(!core.can_end_run())
                 .control_size(ControlSize::Small)
                 .shortcut("⌘D")
                 .show_shortcut()
-                .on_press(|s: &mut FullUi| lock(&s.core).rate())
+                .on_press(|s: &mut FullUi| lock(&s.core).end_run())
                 .build(k)
-                .key("rate"),
+                .key("end-run"),
         );
     }
     let title = text(title)
@@ -614,7 +625,7 @@ fn scoreboard_empty(k: &Kit) -> El {
         .pt(100.0)
         .items_center()
         .child(text("No rated runs yet").font(k.ty.body_medium).color(c.text_base))
-        .child(text(format!("Finish a task and rate it with /done. Each role gets a table here, and an agent needs {} runs to rank.", scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
+        .child(text(format!("Finish a task and end it with ⌘D. Each role gets a table here, and an agent needs {} runs to rank.", scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
         .child(
             row().pt(8.0).child(
                 Button::new("Start a task")
@@ -651,7 +662,7 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
             .child(text(t).font(numbers).color(c.text_muted))
     };
     let mut page = col().w_full().gap(22.0).px(28.0).py(22.0);
-    page = page.child(
+    let mut summary = col().gap(4.0).child(
         text(format!(
             "{} runs logged · agents under {} runs are marked too few and can’t rank first",
             board.runs,

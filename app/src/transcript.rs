@@ -10,6 +10,8 @@ pub const DONE: &str = "whodunit.done";
 pub const SWITCH: &str = "whodunit.switch";
 pub const FANOUT_VIEW: &str = "whodunit.fanout-view";
 pub const FANOUT_PICK: &str = "whodunit.fanout-pick";
+/// Title of `/done`'s select; its options read `5 · nailed it, great` down to `1 · failed`.
+pub const END_TITLE: &str = "End this run";
 
 #[derive(Clone, Debug)]
 pub enum Block {
@@ -45,7 +47,6 @@ pub enum Item {
         running: bool,
     },
     Fanout {
-        role: String,
         prompt: Option<String>,
         answers: Vec<FanAnswer>,
         picked: Option<String>,
@@ -273,7 +274,6 @@ impl Transcript {
                     })
                     .unwrap_or_default();
                 self.items.push(Item::Fanout {
-                    role: str_of(data, "role"),
                     prompt: None,
                     answers,
                     picked: None,

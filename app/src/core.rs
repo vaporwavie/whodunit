@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::config::{self, AppConfig};
 use crate::pi::{Pi, Spawn};
 use crate::sessions::{self, Summary};
-use crate::transcript::{Item, Transcript, str_of};
+use crate::transcript::{END_TITLE, Item, Transcript, str_of};
 
 pub type Shared = Arc<Mutex<Core>>;
 
@@ -38,8 +38,25 @@ pub struct Dialog {
     pub id: String,
     pub title: String,
     pub kind: DialogKind,
-    pub highlight: usize,
+    pub highlight: Option<usize>,
     pub generation: u64,
+}
+
+impl Dialog {
+    /// Ending a run can't be undone and reveals the agent, so its select needs ⏎ to commit.
+    pub fn ends_run(&self) -> bool {
+        self.title == END_TITLE
+    }
+}
+
+/// The digit an end-run option answers to: `4 · nailed it, rough edges` → `("4", "nailed it, rough edges")`.
+pub fn score_key(option: &str) -> Option<(&str, &str)> {
+    let (key, label) = option.split_once(" · ")?;
+    let digit = key.len() == 1 && key.chars().all(|c| c.is_ascii_digit());
+    if !digit {
+        return None;
+    }
+    Some((key, label))
 }
 
 /// What to do once the unrated-run guard is answered.
@@ -95,7 +112,7 @@ pub struct Core {
     pub stats: Stats,
     pub dialog: Option<Dialog>,
     pub leave: Option<Leave>,
-    pub after_rating: Option<Leave>,
+    pub after_end: Option<Leave>,
     pub toasts: Vec<Toast>,
     pub statuses: BTreeMap<String, String>,
     pub widgets: BTreeMap<String, Vec<String>>,
@@ -106,7 +123,7 @@ pub struct Core {
     pub ready: bool,
 }
 
-const RATE_AFTER_TURN: &str = "Rate when the turn ends. Esc stops it now.";
+const END_AFTER_TURN: &str = "End the run when the turn finishes. Esc stops it now.";
 
 pub const APP_COMMANDS: [(&str, &str); 5] = [
     (
@@ -138,7 +155,7 @@ impl Core {
             stats: Stats::default(),
             dialog: None,
             leave: None,
-            after_rating: None,
+            after_end: None,
             toasts: Vec::new(),
             statuses: BTreeMap::new(),
             widgets: BTreeMap::new(),
@@ -222,8 +239,8 @@ impl Core {
         self.t.week.unrated() && self.t.has_answer()
     }
 
-    /// Rating opens once the turn has ended with an answer and nothing else is asking.
-    pub fn can_rate(&self) -> bool {
+    /// Ending opens once the turn has finished with an answer and nothing else is asking.
+    pub fn can_end_run(&self) -> bool {
         self.has_unrated_answer()
             && !self.streaming
             && self.dialog.is_none()
@@ -241,6 +258,10 @@ impl Core {
     pub fn submit(&mut self, text: &str, follow_up: bool) {
         let text = text.trim_end();
         if text.trim().is_empty() {
+            return;
+        }
+        if self.t.week.done.is_some() && !text.starts_with('/') {
+            self.toast("This run has ended. ⌘N for the next task.", "info");
             return;
         }
         if let Some(command) = text.strip_prefix('!') {
@@ -264,7 +285,7 @@ impl Core {
             match name {
                 "new" => return self.request_leave(Leave::New),
                 "done" if self.streaming => {
-                    self.toast(RATE_AFTER_TURN, "info");
+                    self.toast(END_AFTER_TURN, "info");
                     return;
                 }
                 "compact" => {
@@ -315,13 +336,13 @@ impl Core {
         self.touch();
     }
 
-    pub fn rate(&mut self) {
+    pub fn end_run(&mut self) {
         if self.t.week.deal.is_none() {
-            self.toast("Nothing to rate yet. Send the task first.", "info");
+            self.toast("Nothing to end yet. Send the task first.", "info");
             return;
         }
         if self.streaming {
-            self.toast(RATE_AFTER_TURN, "info");
+            self.toast(END_AFTER_TURN, "info");
             return;
         }
         self.send(
@@ -342,7 +363,7 @@ impl Core {
         self.send(json!({"type": "abort"}), Some(Pending::Generic("abort")));
     }
 
-    /// House rule 4: leaving a session with an unrated answer asks first.
+    /// House rule 4: leaving a session whose run hasn't ended asks first.
     pub fn request_leave(&mut self, leave: Leave) {
         if let Leave::Open(path) = &leave {
             if self.session_file.as_deref() == Some(path.to_string_lossy().as_ref()) {
@@ -364,11 +385,11 @@ impl Core {
         match rate_first {
             Some(true) if self.streaming => {
                 self.leave = Some(leave);
-                self.toast(RATE_AFTER_TURN, "info");
+                self.toast(END_AFTER_TURN, "info");
             }
             Some(true) => {
-                self.after_rating = Some(leave);
-                self.rate();
+                self.after_end = Some(leave);
+                self.end_run();
             }
             Some(false) => self.do_leave(leave),
             None => {}
@@ -410,6 +431,22 @@ impl Core {
         self.touch();
     }
 
+    /// Commits the highlighted option; an end-run select with nothing chosen yet stays open.
+    pub fn commit(&mut self) {
+        let Some(index) = self.dialog.as_ref().and_then(|d| d.highlight) else {
+            return;
+        };
+        self.pick(index);
+    }
+
+    pub fn choose(&mut self, index: usize) {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        dialog.highlight = Some(index);
+        self.touch();
+    }
+
     pub fn pick(&mut self, index: usize) {
         let Some(DialogKind::Select(options)) = self.dialog.as_ref().map(|d| d.kind.clone()) else {
             return;
@@ -427,8 +464,13 @@ impl Core {
         let DialogKind::Select(options) = &dialog.kind else {
             return;
         };
-        let n = options.len() as i64;
-        dialog.highlight = ((dialog.highlight as i64 + delta).rem_euclid(n.max(1))) as usize;
+        let n = options.len().max(1) as i64;
+        let next = match dialog.highlight {
+            Some(index) => (index as i64 + delta).rem_euclid(n),
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        dialog.highlight = Some(next as usize);
         self.touch();
     }
 
@@ -544,7 +586,7 @@ impl Core {
                     if !had_done && self.t.week.done.is_some() {
                         self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
                         self.refresh_sessions();
-                        if let Some(leave) = self.after_rating.take() {
+                        if let Some(leave) = self.after_end.take() {
                             self.do_leave(leave);
                         }
                     }
@@ -670,13 +712,17 @@ impl Core {
             }
             _ => return,
         };
-        self.dialog = Some(Dialog {
+        let mut dialog = Dialog {
             id,
             title,
             kind,
-            highlight: 0,
+            highlight: Some(0),
             generation: self.version,
-        });
+        };
+        if dialog.ends_run() {
+            dialog.highlight = None;
+        }
+        self.dialog = Some(dialog);
     }
 
     fn on_response(&mut self, record: &Value) {

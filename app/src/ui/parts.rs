@@ -9,7 +9,7 @@ use rune_kit::{
 };
 use serde_json::json;
 
-use crate::core::{Core, DialogKind, Shared, lock};
+use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item};
 
 pub trait HasCore: 'static {
@@ -45,14 +45,13 @@ pub fn panel(k: &Kit, focused: bool) -> El {
 /// Readable measure for prose; code, tables and fan-out cards keep the full column.
 const PROSE_WIDTH: f32 = 480.0;
 
-/// "builder · M" once dealt, never the agent; the agent's name only after `/done`.
+/// Nothing about the deal shows until the run has ended, then "builder · M · it was Opus 5.5".
 pub fn role_line(core: &Core) -> Option<String> {
-    match (&core.t.week.deal, core.reveal()) {
-        (Some(deal), Some(name)) => Some(format!("{} · {} · it was {name}", deal.role, deal.size)),
-        (Some(deal), None) => Some(format!("{} · {}", deal.role, deal.size)),
-        (None, _) if core.pending_prompt.is_some() => Some("dealing…".to_owned()),
-        (None, _) => None,
-    }
+    let Some(deal) = &core.t.week.deal else {
+        return core.pending_prompt.as_ref().map(|_| "dealing…".to_owned());
+    };
+    let name = core.reveal()?;
+    Some(format!("{} · {} · it was {name}", deal.role, deal.size))
 }
 
 pub fn busy_line(core: &Core) -> Option<String> {
@@ -336,7 +335,6 @@ fn fanout_card<S: HasCore>(
 
 fn fanout_view<S: HasCore>(
     core: &Core,
-    role: &str,
     prompt: &Option<String>,
     answers: &[FanAnswer],
     picked: &Option<String>,
@@ -348,11 +346,10 @@ fn fanout_view<S: HasCore>(
     }
     let note = match picked {
         Some(label) => {
-            format!("{role} fan-out: you picked {label}. Follow-ups go to the same agent.")
+            format!("Fan-out: you picked {label}. Follow-ups go to the same agent.")
         }
-        None => format!(
-            "{role} fan-out: every contender answered. Pick the best before you see who wrote it."
-        ),
+        None => "Fan-out: every contender answered. Pick the best before you see who wrote it."
+            .to_owned(),
     };
     column = column.child(text(note).font(k.ty.small).color(k.c.text_muted));
     let cards = answers.iter().map(|a| fanout_card::<S>(core, a, picked, k));
@@ -403,11 +400,10 @@ fn item_view<S: HasCore>(core: &Core, item: &Item, key: &str, k: &Kit) -> El {
                 )
         }
         Item::Fanout {
-            role,
             prompt,
             answers,
             picked,
-        } => fanout_view::<S>(core, role, prompt, answers, picked, k),
+        } => fanout_view::<S>(core, prompt, answers, picked, k),
         Item::Notice(note) => row()
             .w_full()
             .gap(12.0)
@@ -490,9 +486,7 @@ pub fn dialog<S: HasCore>(
     match &dialog.kind {
         DialogKind::Select(options) => {
             let keycaps = options.iter().all(|o| o.chars().count() <= 2);
-            let digits = options
-                .iter()
-                .all(|o| o.chars().all(|ch| ch.is_ascii_digit()));
+            let ends_run = dialog.ends_run();
             let mut list = if keycaps {
                 row().gap(8.0).flex_wrap()
             } else {
@@ -500,11 +494,11 @@ pub fn dialog<S: HasCore>(
             };
             let digit = k.ty.small.features("'tnum' 1");
             for (index, option) in options.iter().enumerate() {
-                let on = index == dialog.highlight;
-                let hint = if index < 9 && !digits {
-                    format!("{}", index + 1)
-                } else {
-                    String::new()
+                let on = Some(index) == dialog.highlight;
+                let (hint, label) = match score_key(option) {
+                    Some((key, label)) if ends_run => (key.to_owned(), label.to_owned()),
+                    _ if index < 9 => (format!("{}", index + 1), option.clone()),
+                    _ => (String::new(), option.clone()),
                 };
                 let ink = if on { c.text_base } else { c.text_muted };
                 let mut item = row()
@@ -522,22 +516,51 @@ pub fn dialog<S: HasCore>(
                 }
                 let item = k
                     .interactive(
-                        item.child(
-                            text(option.clone())
-                                .font(k.ty.ui_medium)
-                                .color(ink)
-                                .wrap()
-                                .shrink(),
-                        ),
+                        item.child(text(label).font(k.ty.ui_medium).color(ink).wrap().shrink()),
                     )
-                    .on_press(move |s: &mut S| with_core(s, |core| core.pick(index)));
+                    .on_press(move |s: &mut S| {
+                        with_core(s, |core| {
+                            if ends_run {
+                                core.choose(index);
+                            } else {
+                                core.pick(index);
+                            }
+                        })
+                    });
                 list = list.child(if keycaps { item } else { item.w_full() });
             }
-            card = card.child(list).child(
-                text("Number keys or ↑↓ ⏎ to choose · esc to cancel")
-                    .font(k.ty.small)
-                    .color(c.text_muted),
-            );
+            card = card.child(list);
+            if ends_run {
+                card = card.child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(
+                            text("Press 5–1, then ⏎ seals the session and reveals the agent · esc keeps working")
+                                .font(k.ty.small)
+                                .color(c.text_muted)
+                                .wrap()
+                                .shrink(),
+                        )
+                        .child(spacer())
+                        .child(
+                            Button::new("End run")
+                                .variant(ButtonVariant::Contrast)
+                                .shortcut("⏎")
+                                .show_shortcut()
+                                .disabled(dialog.highlight.is_none())
+                                .on_press(|s: &mut S| with_core(s, |core| core.commit()))
+                                .build(k),
+                        ),
+                );
+            } else {
+                card = card.child(
+                    text("Number keys or ↑↓ ⏎ to choose · esc to cancel")
+                        .font(k.ty.small)
+                        .color(c.text_muted),
+                );
+            }
         }
         DialogKind::Confirm(message) => {
             card = card
@@ -632,15 +655,15 @@ pub fn leave_guard<S: HasCore>(core: &Core, k: &Kit) -> Option<El> {
             .key("leave-guard")
             .gap(12.0)
             .padding(16.0)
-            .child(text("This run isn’t rated yet").font(k.ty.body_medium).color(c.text_base))
-            .child(text("House rule 4: /done on every run. Unrated runs still show on the scoreboard as unrated.").font(k.ty.small).color(c.text_muted).wrap())
+            .child(text("This run hasn’t ended").font(k.ty.body_medium).color(c.text_base))
+            .child(text("House rule 4: end every run with ⌘D. A run left open shows on the scoreboard as unrated.").font(k.ty.small).color(c.text_muted).wrap())
             .child(
                 row()
                     .gap(8.0)
                     .justify_end()
                     .child(Button::new("Stay").variant(ButtonVariant::Ghost).shortcut("esc").show_shortcut().on_press(|s: &mut S| with_core(s, |core| core.answer_leave(None))).build(k))
                     .child(Button::new("Leave unrated").variant(ButtonVariant::Outline).on_press(|s: &mut S| with_core(s, |core| core.answer_leave(Some(false)))).build(k))
-                    .child(Button::new("Rate it now").variant(ButtonVariant::Contrast).shortcut("⏎").show_shortcut().disabled(core.streaming).on_press(|s: &mut S| with_core(s, |core| core.answer_leave(Some(true)))).build(k).default_button()),
+                    .child(Button::new("End it now").variant(ButtonVariant::Contrast).shortcut("⏎").show_shortcut().disabled(core.streaming).on_press(|s: &mut S| with_core(s, |core| core.answer_leave(Some(true)))).build(k).default_button()),
             ),
     )
 }

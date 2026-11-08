@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use rune::{Key, KeyEvent, Mods};
 use whodunit::config::{self, AppConfig};
 use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_pi};
-use whodunit::transcript::{Block, Item};
+use whodunit::transcript::{Block, END_TITLE, Item};
 use whodunit::ui::full::dialog_keys;
+use whodunit::ui::parts;
 
 fn wait_for(shared: &Shared, what: &str, seconds: u64, mut done: impl FnMut(&mut Core) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -31,7 +32,7 @@ fn wait_for(shared: &Shared, what: &str, seconds: u64, mut done: impl FnMut(&mut
 }
 
 /// Presses `key` on the select dialog titled like `title`, the way the composer would.
-fn press(shared: &Shared, title: &str, key: &str) {
+fn press(shared: &Shared, title: &str, key: Key) {
     wait_for(shared, title, 300, |core| {
         let open = core
             .dialog
@@ -40,12 +41,16 @@ fn press(shared: &Shared, title: &str, key: &str) {
         open && dialog_keys(
             core,
             &KeyEvent {
-                key: Key::Text(key.to_owned()),
+                key: key.clone(),
                 mods: Mods::default(),
             },
             true,
         )
     });
+}
+
+fn text_key(key: &str) -> Key {
+    Key::Text(key.to_owned())
 }
 
 fn answer_text(core: &Core) -> String {
@@ -95,16 +100,52 @@ impl Run {
         }
     }
 
-    /// Leaves for a new session through the unrated guard, rating with the score key `score`.
-    fn rate_and_leave(&self, session: &str, score: &str) -> String {
+    /// Leaves for a new session through the unrated guard, ending the run with the score key `score`.
+    fn end_and_leave(&self, session: &str, score: &str) -> String {
+        {
+            let core = lock(&self.shared);
+            assert!(
+                parts::role_line(&core).is_none(),
+                "the role stays hidden until the run ends"
+            );
+            let subtitle = core
+                .sessions
+                .iter()
+                .find(|s| s.path.to_string_lossy() == session)
+                .map(|s| s.subtitle())
+                .unwrap_or_default();
+            assert!(
+                subtitle.is_empty(),
+                "the sidebar hides the role: {subtitle:?}"
+            );
+        }
         lock(&self.shared).request_leave(Leave::New);
         assert!(
             lock(&self.shared).leave.is_some(),
-            "leaving an unrated run asks first"
+            "leaving an open run asks first"
         );
         lock(&self.shared).answer_leave(Some(true));
-        press(&self.shared, "How did it go?", "1");
-        press(&self.shared, "Score", score);
+        press(&self.shared, END_TITLE, text_key(score));
+        {
+            let core = lock(&self.shared);
+            let dialog = core
+                .dialog
+                .as_ref()
+                .expect("a score key alone doesn't end the run");
+            let DialogKind::Select(options) = &dialog.kind else {
+                panic!("the end-run dialog is a select")
+            };
+            let chosen = dialog
+                .highlight
+                .and_then(|i| options.get(i))
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                chosen.starts_with(&format!("{score} · ")),
+                "pressing {score} highlights {chosen:?}"
+            );
+        }
+        press(&self.shared, END_TITLE, Key::Enter);
         wait_for(&self.shared, "the new session", 60, |core| {
             core.session_file.as_deref() != Some(session) && core.t.items.is_empty()
         });
@@ -141,7 +182,7 @@ impl Run {
 
 #[test]
 #[ignore = "talks to real models through pi"]
-fn a_task_is_dealt_answered_rated_and_revealed() {
+fn a_task_is_dealt_answered_ended_and_revealed() {
     let run = Run::start("live-pi-deal");
     let shared = run.shared.clone();
     lock(&shared).submit("/role errand-boy", false);
@@ -168,14 +209,16 @@ fn a_task_is_dealt_answered_rated_and_revealed() {
         (deal.agent, core.session_file.clone().expect("session file"))
     };
 
-    let done = run.rate_and_leave(&session, "5");
+    let done = run.end_and_leave(&session, "5");
     assert!(
-        done.contains(r#""score":5"#) && done.contains(&agent),
-        "pressing 5 logs a 5: {done}"
+        done.contains(r#""score":5"#)
+            && done.contains(r#""outcome":"nailed it""#)
+            && done.contains(&agent),
+        "pressing 5 then enter logs 5, nailed it: {done}"
     );
     run.clean(&session);
     println!(
-        "dealt, answered, rated 5/5, revealed: {}",
+        "dealt, answered, ended 5/5, revealed: {}",
         config::agent_name(&agent)
     );
 }
@@ -200,7 +243,7 @@ fn a_fanout_shows_every_answer_and_continues_on_the_pick() {
         );
         picking && card
     });
-    press(&shared, "Which answer", "B");
+    press(&shared, "Which answer", text_key("B"));
     wait_for(&shared, "the deal on the pick", 60, |core| {
         core.t.week.deal.is_some() && core.session_file.is_some()
     });
@@ -241,14 +284,16 @@ fn a_fanout_shows_every_answer_and_continues_on_the_pick() {
                 .any(|i| matches!(i, Item::Assistant { .. }))
     });
 
-    let done = run.rate_and_leave(&session, "3");
+    let done = run.end_and_leave(&session, "3");
     assert!(
-        done.contains(r#""score":3"#) && done.contains(&agent),
-        "pressing 3 logs a 3: {done}"
+        done.contains(r#""score":3"#)
+            && done.contains(r#""outcome":"needed my fixes""#)
+            && done.contains(&agent),
+        "pressing 3 then enter logs 3, needed my fixes: {done}"
     );
     run.clean(&session);
     println!(
-        "fan-out picked B, follow-up answered, rated 3/5, revealed: {}",
+        "fan-out picked B, follow-up answered, ended 3/5, revealed: {}",
         config::agent_name(&agent)
     );
 }

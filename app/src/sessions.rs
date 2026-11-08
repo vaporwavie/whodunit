@@ -18,13 +18,10 @@ pub struct Summary {
 
 impl Summary {
     pub fn subtitle(&self) -> String {
-        let Some(deal) = &self.week.deal else {
+        let (Some(deal), Some(done)) = (&self.week.deal, &self.week.done) else {
             return String::new();
         };
-        match &self.week.done {
-            Some(done) => format!("{} · {} · {}/5", deal.role, deal.size, done.score),
-            None => format!("{} · {}", deal.role, deal.size),
-        }
+        format!("{} · {} · {}/5", deal.role, deal.size, done.score)
     }
 }
 

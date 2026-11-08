@@ -357,7 +357,7 @@ pub fn release_cmd(s: &mut FullUi, tx: &mut Tx) {
 fn run_in(s: &mut FullUi, path: PathBuf) {
     close(s);
     let core = s.core.clone();
-    std::thread::spawn(move || crate::core::start_pi(&core, Some(path)));
+    std::thread::spawn(move || crate::core::start_pi(&core, Some(path), None));
 }
 
 fn pick_here(s: &mut FullUi) {

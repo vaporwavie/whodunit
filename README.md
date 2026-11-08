@@ -54,6 +54,8 @@ Jev is TypeSafe's classifier model (`typesafe/jev-latest`). TypeSafe isn't one o
 
 If Jev can't be reached, the run falls back to `builder`. `/role <name>` before the first prompt skips Jev. The scoreboard reports how often each of these decided the role.
 
+The same first prompt also goes to a small model (`titler` in `roles.json`, Claude Haiku 5.5 by default) for a short session title. It sees only the prompt, never the dealt model, and `/name` overrides it.
+
 ## The contenders
 
 From my `roles.json` for the first trial week (2026-11-09 to 2026-11-13):

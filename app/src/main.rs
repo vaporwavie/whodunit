@@ -51,7 +51,7 @@ fn main() {
     if !headless {
         lock(&shared).refresh_sessions();
         let shared = shared.clone();
-        std::thread::spawn(move || whodunit::core::start_pi(&shared, None));
+        std::thread::spawn(move || whodunit::core::start_pi(&shared, None, None));
     }
 
     let full_spec = AppSpec {

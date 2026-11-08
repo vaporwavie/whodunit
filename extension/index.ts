@@ -22,6 +22,9 @@ const FANOUT_TIMEOUT_MS = 20 * 60 * 1000;
 const FANOUT_TOOLS = "read,grep,find,ls,mcp__exa__*";
 const LABELS = ["A", "B", "C", "D"];
 const END_TITLE = "End this run";
+const TITLER = "anthropic/claude-haiku-5-5";
+const TITLE_PROMPT =
+	"Name the coding task in the user's message with a 2 to 6 word title in sentence case, in the language of the message. Reply with the title only: no quotes, no trailing period.";
 
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -34,6 +37,7 @@ interface RoleConfig {
 
 interface Config {
 	classifier: { provider: string; model: string; minConfidence: number };
+	titler?: string;
 	agents: Record<string, string>;
 	roles: Record<string, RoleConfig>;
 }
@@ -151,6 +155,18 @@ async function classify(ctx: ExtensionContext, config: Config, prompt: string): 
 	const confidence = probabilities[role] ?? 0;
 	const size = sizeAnswer?.type === "choice" ? sizeAnswer.choice : "?";
 	return { role, size, confidence, probabilities, source: "jev" };
+}
+
+async function generateTitle(ctx: ExtensionContext, agent: string, prompt: string, signal: AbortSignal): Promise<string | undefined> {
+	const { provider, id } = splitAgent(agent);
+	const model = ctx.modelRegistry.find(provider, id);
+	if (!model) return undefined;
+	const reply = await ctx.modelRegistry
+		.streamSimple(model, { systemPrompt: TITLE_PROMPT, messages: [{ role: "user", content: prompt.slice(0, 4_000), timestamp: Date.now() }] }, { maxTokens: 40, signal })
+		.result();
+	if (reply.stopReason !== "stop") return undefined;
+	const title = textOf(reply).split("\n")[0].trim().replace(/^["'`*]+|["'`*.]+$/g, "");
+	return title || undefined;
 }
 
 async function confirmRole(ctx: ExtensionContext, config: Config, classification: Classification): Promise<Classification> {
@@ -338,6 +354,7 @@ export default function (pi: ExtensionAPI) {
 	if (process.env.WHODUNIT_CHILD) return;
 
 	const children = new Set<ChildProcess>();
+	const titling = new AbortController();
 	let forcedRole: string | undefined;
 
 	const footerLabel = (ctx: ExtensionContext) => {
@@ -368,6 +385,15 @@ export default function (pi: ExtensionAPI) {
 			source: classification.source,
 			at: new Date().toISOString(),
 		};
+	};
+
+	const nameSession = (ctx: ExtensionContext, config: Config, prompt: string) => {
+		if (pi.getSessionName()) return;
+		generateTitle(ctx, config.titler ?? TITLER, prompt, titling.signal)
+			.then((title) => {
+				if (title && !pi.getSessionName()) pi.setSessionName(title);
+			})
+			.catch(() => undefined);
 	};
 
 	const pickClassification = async (ctx: ExtensionContext, config: Config, prompt: string): Promise<Classification> => {
@@ -415,6 +441,7 @@ export default function (pi: ExtensionAPI) {
 		if (findEntry<Deal>(ctx, DEAL)) return { action: "continue" };
 
 		const config = loadConfig();
+		nameSession(ctx, config, event.text);
 		const classification = await pickClassification(ctx, config, event.text);
 		const role = config.roles[classification.role];
 		const fanoutReady = role?.fanout && ctx.hasUI && role.contenders.length <= LABELS.length;
@@ -448,6 +475,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		titling.abort();
 		for (const child of children) child.kill("SIGTERM");
 	});
 

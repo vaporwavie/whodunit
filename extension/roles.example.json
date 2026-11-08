@@ -1,6 +1,7 @@
 {
   "frozen": "2026-11-09 to 2026-11-13",
   "classifier": { "provider": "typesafe", "model": "jev-latest", "minConfidence": 0.6 },
+  "titler": "anthropic/claude-haiku-5-5",
   "agents": {
     "anthropic/claude-opus-5-5": "Opus 5.5",
     "openai/gpt-6.1-sol": "GPT-6.1 Sol",

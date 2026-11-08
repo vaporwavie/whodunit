@@ -4,6 +4,8 @@ A macOS desktop frontend for the [whodunit](../README.md) pi extension, written 
 
 On top of plain pi it adds a sidebar of sessions, a guard against leaving a run open, a scoreboard page and a menu bar icon that reopens the window.
 
+The sidebar lists runs from every folder, newest first, each under its folder's name (and its role, size and score once ended). Opening one from another folder restarts pi there. Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab; after that every thought shows in full, capped at twelve lines that scroll.
+
 ## Install
 
 It needs macOS and Rust (the version is pinned in `rust-toolchain.toml`). Set up the extension first, as in the [root README](../README.md#setup).
@@ -34,7 +36,7 @@ A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) 
 
 ## Folder picker
 
-⌘O, or the folder row at the bottom of the sidebar, opens the folder picker.
+⌘O, or the folder button on a new task's composer, opens the folder picker.
 
 The top list is recent folders, newest first: the ones you opened here and the ones plain pi ran in. The folder pi runs in now isn't listed, since ⌘N already starts a new task there. Below the recents is the current folder's parent, so your other projects are one ↓ away.
 

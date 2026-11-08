@@ -21,6 +21,8 @@ pub enum Block {
         id: String,
         name: String,
         args: String,
+        /// What a `write` call puts in its file, for its diff.
+        written: Option<String>,
     },
 }
 
@@ -59,6 +61,8 @@ pub struct ToolRun {
     pub output: String,
     pub is_error: bool,
     pub running: bool,
+    /// The unified patch an `edit` reports in its result's details.
+    pub patch: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -148,6 +152,27 @@ pub fn args_summary(args: &Value) -> String {
     }
 }
 
+fn tool_block(id: String, name: String, arguments: &Value) -> Block {
+    let written = (name == "write")
+        .then(|| arguments.get("content").and_then(Value::as_str))
+        .flatten()
+        .map(str::to_owned);
+    Block::Tool {
+        id,
+        name,
+        args: args_summary(arguments),
+        written,
+    }
+}
+
+/// The patch in a tool result's `details`, which only `edit` sends.
+pub fn result_patch(result: &Value) -> Option<String> {
+    result
+        .pointer("/details/patch")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 pub fn blocks_of(message: &Value) -> Vec<Option<Block>> {
     let Some(content) = message.get("content").and_then(Value::as_array) else {
         return vec![Some(Block::Text(content_text(
@@ -159,11 +184,11 @@ pub fn blocks_of(message: &Value) -> Vec<Option<Block>> {
         .map(|block| match block.get("type").and_then(Value::as_str) {
             Some("text") => Some(Block::Text(str_of(block, "text"))),
             Some("thinking") => Some(Block::Thinking(str_of(block, "thinking"))),
-            Some("toolCall") => Some(Block::Tool {
-                id: str_of(block, "id"),
-                name: str_of(block, "name"),
-                args: args_summary(block.get("arguments").unwrap_or(&Value::Null)),
-            }),
+            Some("toolCall") => Some(tool_block(
+                str_of(block, "id"),
+                str_of(block, "name"),
+                block.get("arguments").unwrap_or(&Value::Null),
+            )),
             _ => None,
         })
         .collect()
@@ -352,6 +377,7 @@ impl Transcript {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 run.running = false;
+                run.patch = result_patch(message);
             }
             Some("bashExecution") => self.items.push(Item::Bash {
                 command: str_of(message, "command"),
@@ -403,6 +429,7 @@ impl Transcript {
                     id: str_of(update, "id"),
                     name: str_of(update, "toolName"),
                     args: String::new(),
+                    written: None,
                 })
             }
             "text_delta" => match slot {
@@ -417,11 +444,11 @@ impl Transcript {
             "thinking_end" => *slot = Some(Block::Thinking(str_of(update, "content"))),
             "toolcall_end" => {
                 if let Some(call) = update.get("toolCall") {
-                    *slot = Some(Block::Tool {
-                        id: str_of(call, "id"),
-                        name: str_of(call, "name"),
-                        args: args_summary(call.get("arguments").unwrap_or(&Value::Null)),
-                    });
+                    *slot = Some(tool_block(
+                        str_of(call, "id"),
+                        str_of(call, "name"),
+                        call.get("arguments").unwrap_or(&Value::Null),
+                    ));
                 }
             }
             _ => {}

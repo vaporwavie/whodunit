@@ -107,6 +107,8 @@ pub struct Core {
     pub t: Transcript,
     pub session_file: Option<String>,
     pub streaming: bool,
+    /// When the agent started its current turn, for the working timer.
+    pub turn_started: Option<Instant>,
     pub pending_prompt: Option<String>,
     pub queue: (Vec<String>, Vec<String>),
     pub stats: Stats,
@@ -121,6 +123,8 @@ pub struct Core {
     pub sessions: Vec<Summary>,
     pub exited: Option<String>,
     pub ready: bool,
+    /// A session in another folder to open: pi restarts there (`start_pi`), which the window runs.
+    pub relaunch: Option<(PathBuf, PathBuf)>,
 }
 
 const END_AFTER_TURN: &str = "End the run when the turn finishes. Esc stops it now.";
@@ -150,6 +154,7 @@ impl Core {
             t: Transcript::default(),
             session_file: None,
             streaming: false,
+            turn_started: None,
             pending_prompt: None,
             queue: (Vec::new(), Vec::new()),
             stats: Stats::default(),
@@ -164,6 +169,7 @@ impl Core {
             sessions: Vec::new(),
             exited: None,
             ready: false,
+            relaunch: None,
         }
     }
 
@@ -219,7 +225,7 @@ impl Core {
     /// pi writes a session file only after its first assistant message, so a fan-out session
     /// that hasn't been followed up yet is listed from memory.
     pub fn refresh_sessions(&mut self) {
-        self.sessions = sessions::list(&config::session_dir(&self.cwd));
+        self.sessions = sessions::list(&config::sessions_root());
         if let (Some(file), Some(title)) = (&self.session_file, self.t.title()) {
             let path = PathBuf::from(file);
             if self.t.week.deal.is_some()
@@ -230,6 +236,7 @@ impl Core {
                     0,
                     Summary {
                         path,
+                        cwd: self.cwd.clone(),
                         title,
                         week: self.t.week.clone(),
                     },
@@ -411,6 +418,17 @@ impl Core {
                 if self.session_file.as_deref() == Some(path.as_str()) {
                     return;
                 }
+                let elsewhere = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.path.to_string_lossy() == path)
+                    .map(|s| s.cwd.clone())
+                    .filter(|cwd| *cwd != self.cwd);
+                if let Some(cwd) = elsewhere {
+                    self.relaunch = Some((cwd, PathBuf::from(path)));
+                    self.touch();
+                    return;
+                }
                 self.send(
                     json!({"type": "switch_session", "sessionPath": path.clone()}),
                     Some(Pending::Switch(Some(path))),
@@ -485,9 +503,13 @@ impl Core {
         match kind.as_str() {
             "response" => self.on_response(&record),
             "extension_ui_request" => self.on_ui_request(&record),
-            "agent_start" => self.streaming = true,
+            "agent_start" => {
+                self.streaming = true;
+                self.turn_started = Some(Instant::now());
+            }
             "agent_settled" => {
                 self.streaming = false;
+                self.turn_started = None;
                 self.pending_prompt = None;
                 self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
                 self.refresh_sessions();
@@ -531,6 +553,7 @@ impl Core {
                 let result = record.get("result").or_else(|| record.get("partialResult"));
                 if let Some(result) = result {
                     run.output = crate::transcript::tool_output(result);
+                    run.patch = crate::transcript::result_patch(result);
                 }
                 run.is_error = record
                     .get("isError")
@@ -600,7 +623,8 @@ impl Core {
                 self.t.name = record
                     .get("name")
                     .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .map(str::to_owned);
+                self.refresh_sessions();
             }
             "compaction_start" => self
                 .statuses
@@ -757,6 +781,9 @@ impl Core {
                     .get("isStreaming")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                if !self.streaming {
+                    self.turn_started = None;
+                }
                 self.ready = true;
                 self.refresh_sessions();
             }
@@ -852,8 +879,8 @@ impl Core {
     }
 }
 
-/// Starts (or restarts in another folder) the pi process behind `shared`.
-pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>) {
+/// Starts (or restarts in another folder) the pi process behind `shared`, opening `session` if given.
+pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>) {
     let login = crate::config::login_env();
     let (spec_bin, cwd, generation) = {
         let mut core = lock(shared);
@@ -867,6 +894,7 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>) {
         core.t = Transcript::default();
         core.session_file = None;
         core.streaming = false;
+        core.turn_started = None;
         core.exited = None;
         core.ready = false;
         core.pending.clear();
@@ -885,12 +913,17 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>) {
     };
     let for_records = shared.clone();
     let for_exit = shared.clone();
+    let session = session.map(|path| path.to_string_lossy().into_owned());
+    let mut args = vec!["--model", "whodunit/auto"];
+    if let Some(path) = &session {
+        args.extend(["--session", path.as_str()]);
+    }
     let spawned = Pi::spawn(
         Spawn {
             bin: &spec_bin,
             env: &login.vars,
             cwd: &cwd,
-            args: &["--model", "whodunit/auto"],
+            args: &args,
         },
         move |record| {
             let wakers = {

@@ -1,5 +1,6 @@
 //! The default mode: an ordinary agent chat window (sessions, transcript, composer) under the week's rules.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -7,6 +8,7 @@ use std::time::Duration;
 use rune::{
     Cx, El, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Transition, Tx, col, row, text,
 };
+use rune_kit::diff::DiffState;
 use rune_kit::shell::{
     self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
     SplitView, Toolbar,
@@ -65,6 +67,10 @@ pub struct FullUi {
     pub page: Page,
     pub board: Option<Board>,
     pub picker: FolderPicker,
+    /// Diffs of the open session's `edit` and `write` calls, by call id.
+    diffs: HashMap<String, DiffState>,
+    /// The working timer's second as last drawn.
+    ticked: Option<u64>,
     window_focused: bool,
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
@@ -80,6 +86,14 @@ impl HasCore for FullUi {
     fn core(&self) -> &Shared {
         &self.core
     }
+
+    fn diff(&self, id: &str) -> Option<&DiffState> {
+        self.diffs.get(id)
+    }
+
+    fn diff_mut(&mut self, id: &str) -> &mut DiffState {
+        self.diffs.entry(id.to_owned()).or_default()
+    }
 }
 
 impl FullUi {
@@ -94,6 +108,8 @@ impl FullUi {
             page: Page::Chat,
             board: None,
             picker: FolderPicker::default(),
+            diffs: HashMap::new(),
+            ticked: None,
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
             slash_pick: (String::new(), 0),
@@ -327,7 +343,27 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     let switched = core.session_file != s.seen_session;
     if switched {
         s.seen_session = core.session_file.clone();
+        s.diffs.clear();
     }
+    if changed || switched {
+        let built = parts::tool_diffs(&core, |id| s.diffs.contains_key(id));
+        changed |= !built.is_empty();
+        s.diffs.extend(
+            built
+                .into_iter()
+                .map(|(id, files)| (id, DiffState::new(files))),
+        );
+    }
+    let second = core.turn_started.map(|started| started.elapsed().as_secs());
+    if second != s.ticked {
+        s.ticked = second;
+        changed = true;
+    }
+    if let Some(started) = core.turn_started {
+        let into = started.elapsed().subsec_millis() as u64;
+        tx.wake_after(Duration::from_millis(1000 - into));
+    }
+    let relaunch = core.relaunch.take();
     if let Some((generation, text)) = core
         .editor_text
         .clone()
@@ -350,6 +386,10 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     }
     let shore = s.page == Page::Chat && blank(&core) && s.shore_motion() == dither::Motion::Live;
     drop(core);
+    if let Some((cwd, session)) = relaunch {
+        let core = s.core.clone();
+        std::thread::spawn(move || crate::core::start_pi(&core, Some(cwd), Some(session)));
+    }
     if switched {
         tx.scroll_to_bottom_instant("transcript");
     }
@@ -363,7 +403,6 @@ fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
     let current = core.session_file.as_deref() == Some(summary.path.to_string_lossy().as_ref());
     let path = summary.path.clone();
     let mut r = SidebarRow::new(summary.title.clone())
-        .height(44.0)
         .subtitle(summary.subtitle())
         .selected(current && s.page == Page::Chat)
         .on_select(move |s: &mut FullUi, _| {
@@ -409,15 +448,6 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 .on_select(|s: &mut FullUi, _| s.open_scoreboard())
                 .build(k)
                 .key("scoreboard"),
-        )
-        .footer(
-            SidebarRow::new(config::short_path(&core.cwd))
-                .icon(&FOLDER)
-                .detail("⌘O")
-                .height(32.0)
-                .on_select(|s: &mut FullUi, _| folder_picker::show(s))
-                .build(k)
-                .key("folder"),
         );
     if !unrated.is_empty() {
         sb = sb.section(
@@ -504,21 +534,12 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
 }
 
 fn composer_footer(s: &FullUi, core: &Core, k: &Kit) -> El {
-    let c = &k.c;
     let mut status = row().gap(8.0).center_y().grow(1.0).shrink().min_w(0.0);
     if let Some(mode) = shell_mode(&s.composer.text) {
         status = status.child(parts::chip(mode, k));
     }
-    if let Some(line) = parts::busy_line(core) {
-        status = status
-            .child(rune_kit::Spinner::new().size(12.0).build(k))
-            .child(
-                text(line)
-                    .font(k.ty.small)
-                    .color(c.text_muted)
-                    .truncate()
-                    .shrink(),
-            );
+    if blank(core) {
+        status = status.child(workspace_button(core, k));
     }
     if let Some(queue) = parts::queue_line(core, k) {
         status = status.child(queue);
@@ -535,6 +556,19 @@ fn composer_footer(s: &FullUi, core: &Core, k: &Kit) -> El {
         footer = footer.child(meter);
     }
     footer.child(send_button(s, core, k))
+}
+
+/// A new task picks its folder where it's typed, as the session belongs to it from the first prompt.
+fn workspace_button(core: &Core, k: &Kit) -> El {
+    Button::new(config::short_path(&core.cwd))
+        .icon(&FOLDER)
+        .variant(ButtonVariant::Ghost)
+        .control_size(ControlSize::Small)
+        .help("Change the folder pi works in")
+        .shortcut("⌘O")
+        .on_press(folder_picker::show)
+        .build(k)
+        .key("workspace")
 }
 
 /// `!` runs a shell command and `!!` keeps its output out of the agent's context.
@@ -617,7 +651,10 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
         .padding(6.0)
         .child(field)
         .child(composer_footer(s, core, k));
-    let mut column = col().w_full();
+    let mut column = col().w_full().gap(8.0);
+    if let Some(working) = parts::working(core, k) {
+        column = column.child(working);
+    }
     if let Some(list) = slash_list(&s.composer.text, s.slash_index(), core, k) {
         // A zero-height shelf the list hangs above, so opening it never moves the intro or the transcript.
         let shelf = row()

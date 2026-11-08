@@ -2,8 +2,11 @@
 
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::time::Duration;
 
-use rune::{Color, El, GrowthSpec, Tx, col, el, row, spacer, text};
+use rune::{Color, El, GrowthSpec, ScrollSpec, Tx, col, el, row, spacer, text};
+use rune_kit::diff::{self, DiffState, DiffView, FileDiff};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Kit, Markdown, MarkdownStyle, Spinner,
 };
@@ -14,6 +17,9 @@ use crate::transcript::{Block, FanAnswer, Item};
 
 pub trait HasCore: 'static {
     fn core(&self) -> &Shared;
+    /// The diff an `edit` or `write` tool call made, by call id, once the window has built it.
+    fn diff(&self, id: &str) -> Option<&DiffState>;
+    fn diff_mut(&mut self, id: &str) -> &mut DiffState;
 }
 
 pub fn with_core<S: HasCore>(s: &S, f: impl FnOnce(&mut Core)) {
@@ -64,22 +70,51 @@ pub fn busy_line(core: &Core) -> Option<String> {
     if !core.streaming {
         return None;
     }
-    let tool_running = core.t.items.iter().any(|item| {
-        let Item::Assistant { blocks, .. } = item else {
-            return false;
-        };
-        blocks.iter().flatten().any(|block| match block {
-            Block::Tool { id, .. } => core.t.tools.get(id).is_none_or(|run| run.running),
-            _ => false,
-        })
-    });
-    if tool_running {
-        return None;
-    }
     Some("Working…".to_owned())
 }
 
+/// "8s", "1m 05s": the working timer, in tabular figures so it doesn't jitter.
+fn elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    format!("{}m {:02}s", secs / 60, secs % 60)
+}
+
+/// Sits on the composer while the agent works: what it's doing and for how long.
+pub fn working(core: &Core, k: &Kit) -> Option<El> {
+    let line = busy_line(core)?;
+    let c = &k.c;
+    let mut status = row()
+        .key("working")
+        .w_full()
+        .gap(8.0)
+        .px(14.0)
+        .center_y()
+        .child(Spinner::new().size(12.0).build(k))
+        .child(
+            text(line)
+                .font(k.ty.small)
+                .color(c.text_muted)
+                .truncate()
+                .shrink(),
+        );
+    if let Some(started) = core.turn_started {
+        status = status.child(
+            text(elapsed(started.elapsed()))
+                .font(k.ty.small.features("'tnum' 1"))
+                .color(c.text_faint),
+        );
+    }
+    Some(status)
+}
+
 const TOOL_TAIL: usize = 8;
+/// A diff past this scrolls inside its card: the header and sixteen lines.
+const DIFF_MAX_H: f32 = 44.0 + 16.0 * 20.0;
+/// A thought past twelve lines scrolls inside its block.
+const THINKING_MAX_H: f32 = 12.0 * 20.0;
 
 /// The one frame for monospace output: tool cards, `!cmd` output and fenced code.
 fn mono_frame(k: &Kit) -> El {
@@ -123,6 +158,122 @@ fn thinking_row(k: &Kit) -> El {
         .center_y()
         .child(Spinner::new().size(14.0).build(k))
         .child(text("Thinking…").font(k.ty.small).color(k.c.text_muted))
+}
+
+/// A finished thought after the reveal: the whole trace, capped so it never walls the answer.
+fn thinking_block(body: &str, k: &Kit, key: String) -> El {
+    let c = &k.c;
+    col()
+        .key(key)
+        .w_full()
+        .max_w(PROSE_WIDTH)
+        .max_h(THINKING_MAX_H)
+        .pl(12.0)
+        .border_sides([0.0, 0.0, 0.0, 2.0], c.border_weak)
+        .child(
+            text(body.trim().to_owned())
+                .font(k.ty.ui)
+                .color(c.text_muted)
+                .wrap()
+                .selectable(true),
+        )
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .scroll_edge_fade(16.0)
+}
+
+/// Paths in the diff header read from the session's folder.
+fn relative(path: &str, cwd: &Path) -> String {
+    Path::new(path)
+        .strip_prefix(cwd)
+        .map_or_else(|_| path.to_owned(), |p| p.to_string_lossy().into_owned())
+}
+
+/// The files a finished `edit` or `write` changed, for the diffs the window doesn't hold yet.
+pub fn tool_diffs(core: &Core, known: impl Fn(&str) -> bool) -> Vec<(String, Vec<FileDiff>)> {
+    let mut found = Vec::new();
+    for item in &core.t.items {
+        let Item::Assistant { blocks, .. } = item else {
+            continue;
+        };
+        for block in blocks.iter().flatten() {
+            let Block::Tool {
+                id, args, written, ..
+            } = block
+            else {
+                continue;
+            };
+            if known(id) {
+                continue;
+            }
+            let Some(run) = core.t.tools.get(id).filter(|r| !r.running && !r.is_error) else {
+                continue;
+            };
+            let files = match (&run.patch, written) {
+                (Some(patch), _) => diff::parse(patch)
+                    .into_iter()
+                    .map(|mut file| {
+                        file.old_path = file.old_path.map(|p| relative(&p, &core.cwd));
+                        file.new_path = file.new_path.map(|p| relative(&p, &core.cwd));
+                        file
+                    })
+                    .collect(),
+                (None, Some(content)) => vec![FileDiff::between(
+                    None,
+                    Some(relative(args, &core.cwd)),
+                    "",
+                    content,
+                )],
+                (None, None) => continue,
+            };
+            found.push((id.clone(), files));
+        }
+    }
+    found
+}
+
+/// Lines, hunk gaps and headers, as the diff view lays them out, up to the cap.
+fn diff_height(st: &DiffState) -> f32 {
+    let mut height = 0.0;
+    for (f, file) in st.files().iter().enumerate() {
+        height += 44.0;
+        if st.collapsed(f) {
+            continue;
+        }
+        let lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+        let gaps = (0..=file.hunks.len())
+            .filter(|&g| st.hidden(f, g).is_some_and(|n| n > 0))
+            .count();
+        height += lines as f32 * 20.0 + gaps as f32 * 32.0;
+    }
+    height.min(DIFF_MAX_H)
+}
+
+fn diff_card<S: HasCore>(s: &S, st: &DiffState, id: &str, k: &Kit) -> El {
+    let get = id.to_owned();
+    let get_mut = id.to_owned();
+    let view = DiffView::new(
+        move |s: &S| s.diff(&get).unwrap_or_else(|| empty_diff()),
+        move |s: &mut S| s.diff_mut(&get_mut),
+    )
+    .key(format!("diff-{id}"))
+    .build(s, k);
+    col()
+        .w_full()
+        .h(diff_height(st))
+        .radius(k.radius.md)
+        .clip_rounded(k.radius.md)
+        .border(1.0, k.c.border_weak)
+        .child(view)
+}
+
+/// What a diff view reads once its session is gone, until the row it sat in is rebuilt.
+fn empty_diff() -> &'static DiffState {
+    thread_local! {
+        static EMPTY: &'static DiffState = Box::leak(Box::default());
+    }
+    EMPTY.with(|empty| *empty)
 }
 
 fn tool_row(core: &Core, id: &str, name: &str, args: &str, k: &Kit) -> El {
@@ -212,7 +363,8 @@ fn user_bubble(prompt: &str, k: &Kit) -> El {
     )
 }
 
-fn assistant_view(
+fn assistant_view<S: HasCore>(
+    s: &S,
     core: &Core,
     blocks: &[Option<Block>],
     streaming: bool,
@@ -235,15 +387,16 @@ fn assistant_view(
             Some(Block::Thinking(body)) if !body.is_empty() => {
                 // The trace's style names the lab, so before the reveal it only shows while it streams.
                 if core.reveal().is_some() {
-                    let first = body.lines().next().unwrap_or("").to_owned();
-                    column =
-                        column.child(text(first).font(k.ty.small).color(c.text_muted).truncate());
+                    column = column.child(thinking_block(body, k, format!("{key}-think{index}")));
                 } else if streaming && latest == Some(index) {
                     column = column.child(thinking_row(k));
                 }
             }
-            Some(Block::Tool { id, name, args }) => {
-                column = column.child(tool_row(core, id, name, args, k))
+            Some(Block::Tool { id, name, args, .. }) => {
+                column = column.child(match s.diff(id) {
+                    Some(st) => diff_card(s, st, id, k),
+                    None => tool_row(core, id, name, args, k),
+                })
             }
             _ => {}
         }
@@ -347,7 +500,7 @@ fn fanout_view<S: HasCore>(
     column.child(row().w_full().gap(12.0).items_start().children(cards))
 }
 
-fn item_view<S: HasCore>(core: &Core, item: &Item, key: &str, k: &Kit) -> El {
+fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) -> El {
     let c = &k.c;
     let view = match item {
         Item::User(prompt) => user_bubble(prompt, k),
@@ -355,7 +508,7 @@ fn item_view<S: HasCore>(core: &Core, item: &Item, key: &str, k: &Kit) -> El {
             blocks,
             streaming,
             error,
-        } => assistant_view(core, blocks, *streaming, error, k, key),
+        } => assistant_view(s, core, blocks, *streaming, error, k, key),
         Item::Bash {
             command,
             output,
@@ -423,7 +576,7 @@ pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
                 let core = lock(s.core());
                 let last = i + 1 == core.t.items.len() + usize::from(core.pending_prompt.is_some());
                 let body = match core.t.items.get(i) {
-                    Some(item) => item_view::<S>(&core, item, &format!("item-{i}"), k),
+                    Some(item) => item_view::<S>(s, &core, item, &format!("item-{i}"), k),
                     None => core.pending_prompt.as_deref().map_or_else(
                         || col(),
                         |prompt| user_bubble(prompt, k).key("pending-prompt"),

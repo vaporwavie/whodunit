@@ -12,27 +12,41 @@ use crate::transcript::{DEAL, DONE, FANOUT_PICK, SWITCH, Week, content_text, str
 #[derive(Clone, Debug)]
 pub struct Summary {
     pub path: PathBuf,
+    /// The folder pi ran in, from the session file's header.
+    pub cwd: PathBuf,
     pub title: String,
     pub week: Week,
 }
 
 impl Summary {
+    /// The folder, then the role, size and score once the run has ended and they can show.
     pub fn subtitle(&self) -> String {
+        let folder = self
+            .cwd
+            .file_name()
+            .map_or_else(|| self.cwd.to_string_lossy(), |name| name.to_string_lossy())
+            .into_owned();
         let (Some(deal), Some(done)) = (&self.week.deal, &self.week.done) else {
-            return String::new();
+            return folder;
         };
-        format!("{} · {} · {}/5", deal.role, deal.size, done.score)
+        format!(
+            "{folder} · {} · {} · {}/5",
+            deal.role, deal.size, done.score
+        )
     }
 }
 
 const SIDEBAR_LIMIT: usize = 60;
 
-/// Dealt sessions in one folder's session directory, newest first; sessions without a role are left out.
-pub fn list(dir: &Path) -> Vec<Summary> {
-    let Ok(read) = fs::read_dir(dir) else {
+/// Dealt sessions from every folder's session directory, newest first; sessions without a role are left out.
+pub fn list(root: &Path) -> Vec<Summary> {
+    let Ok(dirs) = fs::read_dir(root) else {
         return Vec::new();
     };
-    let mut files: Vec<(SystemTime, PathBuf)> = read
+    let mut files: Vec<(SystemTime, PathBuf)> = dirs
+        .filter_map(Result::ok)
+        .filter_map(|dir| fs::read_dir(dir.path()).ok())
+        .flatten()
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
@@ -57,7 +71,14 @@ fn summarize(path: &Path) -> Option<Summary> {
     let mut week = Week::default();
     let mut name = None;
     let mut first_prompt = None;
+    let mut cwd = None;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if cwd.is_none() && line.starts_with(r#"{"type":"session""#) {
+            cwd = serde_json::from_str::<Value>(&line)
+                .ok()
+                .and_then(|header| header.get("cwd")?.as_str().map(PathBuf::from));
+            continue;
+        }
         let interesting = line.starts_with(r#"{"type":"custom""#)
             || line.starts_with(r#"{"type":"session_info""#)
             || (first_prompt.is_none() && line.contains(r#""role":"user""#));
@@ -105,6 +126,7 @@ fn summarize(path: &Path) -> Option<Summary> {
         .to_owned();
     Some(Summary {
         path: path.to_owned(),
+        cwd: cwd?,
         title,
         week,
     })

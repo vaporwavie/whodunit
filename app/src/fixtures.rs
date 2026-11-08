@@ -21,16 +21,19 @@ fn sidebar(core: &mut Core) {
     core.sessions = vec![
         Summary {
             path: "/fixture/a.jsonl".into(),
+            cwd: crate::config::home().join("Workspace/whodunit"),
             title: "Rename the session store to vault".into(),
             week: core.t.week.clone(),
         },
         Summary {
             path: "/fixture/b.jsonl".into(),
+            cwd: crate::config::home().join("Workspace/blog"),
             title: "Draft the launch post".into(),
             week: unrated,
         },
         Summary {
             path: "/fixture/c.jsonl".into(),
+            cwd: crate::config::home().join("Workspace/uploader"),
             title: "Add retries to the uploader".into(),
             week: rated,
         },
@@ -45,7 +48,7 @@ fn chat(core: &mut Core) {
         Item::Assistant {
             blocks: vec![
                 Some(crate::transcript::Block::Thinking("Find every reference first.".into())),
-                Some(crate::transcript::Block::Tool { id: "t1".into(), name: "bash".into(), args: "rg -l SessionStore src".into() }),
+                Some(crate::transcript::Block::Tool { id: "t1".into(), name: "bash".into(), args: "rg -l SessionStore src".into(), written: None }),
                 Some(crate::transcript::Block::Text("Found it in **4 files**. Renaming the type, its module and the two call sites:\n\n```rust\npub struct Vault {\n    root: PathBuf,\n}\n```\n\nTests pass (`cargo test`: 38 passed).".into())),
             ],
             streaming: false,
@@ -58,6 +61,7 @@ fn chat(core: &mut Core) {
             output: "src/store.rs\nsrc/main.rs\nsrc/ui.rs\ntests/store.rs".into(),
             is_error: false,
             running: false,
+            patch: None,
         },
     );
     core.t.week.deal = deal("errand-boy", "S");
@@ -115,6 +119,9 @@ pub fn scene_end(shared: &Shared) {
 pub fn scene_reveal(shared: &Shared) {
     let mut core = lock(shared);
     chat(&mut core);
+    if let Some(Item::Assistant { blocks, .. }) = core.t.items.get_mut(1) {
+        blocks[0] = Some(Block::Thinking("The user wants `SessionStore` renamed to `Vault` everywhere, with tests still passing.\n\nFirst I need every reference: the type, its module path, the imports and the two call sites in `main.rs`. A plain text search is safer than guessing from the module tree, since tests import it by its full path.\n\nThen rename the file from `store.rs` to `vault.rs` so the module name follows the type. The tests live in `tests/store.rs`; they should move too, or the next person looking for the vault tests won't find them.\n\nLast, run the suite. If anything still names `SessionStore`, the compiler will say so.\n\nOne risk: serialized data. If the store writes its type name to disk, renaming it would break old files. Checking `serde` attributes before touching anything.".into()));
+    }
     core.t.week.done = Some(Done { score: 5 });
     sidebar(&mut core);
     core.toast(
@@ -151,6 +158,7 @@ fn tool(id: &str, name: &str, args: &str) -> Option<Block> {
         id: id.into(),
         name: name.into(),
         args: args.into(),
+        written: None,
     })
 }
 
@@ -161,9 +169,14 @@ fn ran(core: &mut Core, id: &str, output: &str, is_error: bool, running: bool) {
             output: output.into(),
             is_error,
             running,
+            patch: None,
         },
     );
 }
+
+const RETRY_PATCH: &str = "--- src/upload.rs\n+++ src/upload.rs\n@@ -41,9 +41,13 @@ impl Uploader {\n     async fn send_with_retry(&self, chunk: &Chunk) -> Result<()> {\n         let mut attempt = 0;\n         loop {\n             match self.send_chunk(chunk).await {\n                 Ok(()) => return Ok(()),\n-                Err(err) if attempt < 4 => {\n+                Err(err) if attempt < 4 && retryable(&err) => {\n                     attempt += 1;\n                     sleep(backoff(attempt)).await;\n                 }\n                 Err(err) => return Err(err),\n             }\n         }\n     }\n+\n+fn retryable(err: &UploadError) -> bool {\n+    matches!(err, UploadError::Status(500..) | UploadError::Timeout)\n+}\n";
+
+const DEADLINE_TEST: &str = "use uploader::{Uploader, UploadError};\n\n#[tokio::test]\nasync fn gives_up_at_the_deadline() {\n    let server = MockServer::always(503);\n    let started = Instant::now();\n    let err = Uploader::new(server.url()).upload(\"big.bin\").await.unwrap_err();\n    assert!(matches!(err, UploadError::Deadline));\n    assert!(started.elapsed() < Duration::from_secs(31));\n}\n";
 
 /// A builder run mid-way through its second turn: failed and passing tools, a shell command, a queued follow-up.
 pub fn scene_run(shared: &Shared) {
@@ -196,6 +209,12 @@ pub fn scene_run(shared: &Shared) {
         Item::Assistant {
             blocks: vec![
                 Some(Block::Thinking("Thread a deadline through the loop.".into())),
+                Some(Block::Tool {
+                    id: "w1".into(),
+                    name: "write".into(),
+                    args: "tests/deadline.rs".into(),
+                    written: Some(DEADLINE_TEST.into()),
+                }),
                 tool("e3", "edit", "src/upload.rs"),
                 Some(Block::Text("Added a 30s deadline: the loop stops when the next sleep would cross it. Each retry logs the attempt, status and delay at `warn`. Running the suite again".into())),
                 tool("b3", "bash", "cargo test upload -- --nocapture"),
@@ -241,12 +260,21 @@ pub fn scene_run(shared: &Shared) {
     );
     ran(
         &mut core,
+        "w1",
+        "Successfully wrote to tests/deadline.rs",
+        false,
+        false,
+    );
+    ran(
+        &mut core,
         "e3",
         "Replaced 9 lines with 16 lines.",
         false,
         false,
     );
     ran(&mut core, "b3", "", false, true);
+    core.t.tools.get_mut("e2").expect("e2 ran").patch = Some(RETRY_PATCH.into());
+    core.turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(72));
     core.t.week.deal = deal("builder", "M");
     core.t.first_prompt = Some("Retry uploads with backoff".into());
     core.streaming = true;

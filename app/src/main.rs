@@ -61,6 +61,7 @@ fn main() {
         fonts: rune_theme_opencode::FONTS,
         families: rune_theme_opencode::FAMILIES,
         scenes: &[
+            ("empty", |s: &mut FullUi| fixtures::scene_empty(&s.core)),
             ("chat", |s: &mut FullUi| fixtures::scene_chat(&s.core)),
             ("end", |s: &mut FullUi| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut FullUi| fixtures::scene_reveal(&s.core)),

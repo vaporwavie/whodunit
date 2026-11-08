@@ -45,15 +45,6 @@ pub fn panel(k: &Kit, focused: bool) -> El {
 /// Readable measure for prose; code, tables and fan-out cards keep the full column.
 const PROSE_WIDTH: f32 = 480.0;
 
-/// Nothing about the deal shows until the run has ended, then "builder · M · it was Opus 5.5".
-pub fn role_line(core: &Core) -> Option<String> {
-    let Some(deal) = &core.t.week.deal else {
-        return core.pending_prompt.as_ref().map(|_| "dealing…".to_owned());
-    };
-    let name = core.reveal()?;
-    Some(format!("{} · {} · it was {name}", deal.role, deal.size))
-}
-
 pub fn busy_line(core: &Core) -> Option<String> {
     if let Some(text) = core.statuses.get("compaction") {
         return Some(text.clone());

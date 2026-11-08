@@ -12,7 +12,7 @@ use rune_kit::shell::{
     self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
     SplitView, Toolbar,
 };
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextArea, popover};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, ProgressCircle, TextArea, popover};
 
 use crate::config;
 use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key, start_pi};
@@ -396,6 +396,8 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
 
 /// One footer height for every state, so a hint or a Stop button never moves the transcript.
 const FOOTER_H: f32 = 24.0;
+/// Names and descriptions sit in two columns, so every row shares one height.
+const SLASH_ROW_H: f32 = 28.0;
 
 fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<El> {
     let c = &k.c;
@@ -404,30 +406,41 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
         return None;
     }
     let highlighted = highlighted.min(matches.len() - 1);
-    let mut list = col().gap(2.0).padding(6.0);
-    for (index, (name, description)) in matches.into_iter().enumerate() {
-        let mut item = row()
-            .center_y()
-            .gap(10.0)
-            .px(8.0)
-            .py(4.0)
-            .radius(k.radius.sm);
-        if index == highlighted {
-            item = item.fill(c.hover);
-        }
-        list = list.child(
-            item.child(text(format!("/{name}")).font(k.ty.mono).color(c.text_base))
-                .child(
-                    text(description)
-                        .font(k.ty.small)
-                        .color(c.text_muted)
-                        .truncate()
-                        .shrink(),
-                ),
+    let cell = || row().h(SLASH_ROW_H).center_y();
+    let highlight = row()
+        .pin(
+            Some(0.0),
+            Some(highlighted as f32 * SLASH_ROW_H),
+            Some(0.0),
+            None,
+        )
+        .h(SLASH_ROW_H)
+        .radius(k.radius.sm)
+        .fill(c.hover);
+    let mut names = col().pl(10.0).pr(12.0);
+    let mut descriptions = col().grow(1.0).shrink().min_w(0.0).pr(8.0);
+    for (name, description) in matches {
+        names =
+            names.child(cell().child(text(format!("/{name}")).font(k.ty.mono).color(c.text_base)));
+        descriptions = descriptions.child(
+            cell().child(
+                text(description)
+                    .font(k.ty.small)
+                    .color(c.text_muted)
+                    .truncate()
+                    .shrink(),
+            ),
         );
     }
+    let list = col().padding(4.0).child(
+        row()
+            .w_full()
+            .child(highlight)
+            .child(names)
+            .child(descriptions),
+    );
     Some(
-        popover::raised(k, list, k.radius.md)
+        popover::raised(k, list, k.radius.lg)
             .key("slash")
             .w_full()
             .transition(Transition::none()),
@@ -459,7 +472,7 @@ fn composer_footer(core: &Core, hint: &str, k: &Kit) -> El {
         .gap(8.0)
         .center_y()
         .child(status)
-        .child(text(hint.to_owned()).font(k.ty.small).color(c.text_muted));
+        .child(text(hint.to_owned()).font(k.ty.small).color(c.text_faint));
     if core.streaming {
         footer = footer.child(
             Button::new("Stop")
@@ -472,16 +485,33 @@ fn composer_footer(core: &Core, hint: &str, k: &Kit) -> El {
                 .key("stop"),
         );
     }
-    footer
+    footer.child(context_meter(core, k))
+}
+
+/// Shown from the first frame: 0% until pi reports usage.
+fn context_meter(core: &Core, k: &Kit) -> El {
+    let percent = core.stats.context_percent.unwrap_or(0.0);
+    row()
+        .key("context-meter")
+        .gap(6.0)
+        .center_y()
+        .child(
+            ProgressCircle::new((percent / 100.0) as f32)
+                .size(14.0)
+                .label("Context used")
+                .build(k),
+        )
+        .child(
+            text(format!("{percent:.0}%"))
+                .font(k.ty.small.features("'tnum' 1"))
+                .color(k.c.text_muted),
+        )
 }
 
 fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
     let (placeholder, hint) = match (&core.t.week.deal, core.streaming) {
         (_, true) => ("Steer the agent…", "⌘⏎ queues a follow-up"),
-        (None, _) => (
-            "What are we working on?",
-            "⏎ sends",
-        ),
+        (None, _) => ("What are we working on?", "⏎ sends"),
         (Some(_), _) if core.t.week.done.is_some() => {
             ("This run has ended. ⌘N for the next task.", "")
         }
@@ -515,30 +545,38 @@ const COLUMN: f32 = 680.0;
 /// A fan-out's cards sit side by side, so its session takes the wider column throughout.
 const FANOUT_COLUMN: f32 = 820.0;
 
-fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
+/// Sits on the composer, inset to its text, so reading it leads straight into typing.
+fn empty_intro(k: &Kit) -> El {
     let c = &k.c;
+    col()
+        .key("empty-intro")
+        .w_full()
+        .gap(4.0)
+        .px(14.0)
+        .pb(6.0)
+        .child(
+            text("One task per session")
+                .font(k.ty.body_medium)
+                .color(c.text_base),
+        )
+        .child(
+            text("Describe the task below. The role and the agent stay hidden until you end the run with ⌘D.")
+                .font(k.ty.ui)
+                .color(c.text_muted)
+                .wrap(),
+        )
+}
+
+fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
     let fanout = core
         .t
         .items
         .iter()
         .any(|item| matches!(item, Item::Fanout { .. }));
     let width = if fanout { FANOUT_COLUMN } else { COLUMN };
-    let body: El = if core.t.items.is_empty() && core.pending_prompt.is_none() {
+    let empty = core.t.items.is_empty() && core.pending_prompt.is_none();
+    let body: El = if empty {
         col()
-            .w_full()
-            .gap(10.0)
-            .pt(100.0)
-            .items_center()
-            .child(
-                text("One task per session")
-                    .font(k.ty.body_medium)
-                    .color(c.text_base),
-            )
-            .child(
-                text("The role and the agent stay hidden until you end the run with ⌘D.")
-                    .font(k.ty.small)
-                    .color(c.text_muted),
-            )
     } else {
         parts::transcript::<FullUi>(core, k, width)
     };
@@ -550,6 +588,9 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
         .child(body)
         .scroll(ScrollSpec { stick_bottom: true });
     let mut bottom = col().w_full().max_w(width).gap(10.0);
+    if empty {
+        bottom = bottom.child(empty_intro(k));
+    }
     if let Some(toasts) = parts::toasts(core, k) {
         bottom = bottom.child(toasts);
     }
@@ -588,25 +629,7 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
             .unwrap_or_else(|| "New task".to_owned()),
     };
     let title = title.lines().next().unwrap_or_default().to_owned();
-    let numbers = k.ty.small.features("'tnum' 1");
     let mut trailing = row().gap(12.0).center_y();
-    if let Some(line) = parts::role_line(core) {
-        trailing = trailing.child(text(line).font(k.ty.small).color(k.c.text_muted));
-    }
-    if let Some(percent) = core.stats.context_percent {
-        trailing = trailing.child(
-            text(format!("{percent:.0}% context"))
-                .font(numbers)
-                .color(k.c.text_muted),
-        );
-    }
-    if core.reveal().is_some() {
-        trailing = trailing.child(
-            text(format!("${:.3}", core.stats.cost))
-                .font(numbers)
-                .color(k.c.text_muted),
-        );
-    }
     if core.t.week.unrated() {
         trailing = trailing.child(
             Button::new("End run")

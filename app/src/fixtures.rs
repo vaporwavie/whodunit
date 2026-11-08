@@ -72,6 +72,11 @@ pub fn scene_chat(shared: &Shared) {
     sidebar(&mut core);
 }
 
+/// A new task before the first prompt: the empty body over the composer.
+pub fn scene_empty(shared: &Shared) {
+    sidebar(&mut lock(shared));
+}
+
 /// The chat with `/` typed: the slash list over the composer, pi's commands after the app's.
 pub fn scene_slash(shared: &Shared) {
     scene_chat(shared);

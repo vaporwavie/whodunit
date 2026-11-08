@@ -5,28 +5,72 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/run-dark.png">
-  <img alt="A run in the Whodunit app: the role and context use are shown, the model is not" src="docs/run-light.png">
+  <img alt="A run in the Whodunit app: neither the role nor the model is shown until the run ends" src="docs/run-light.png">
 </picture>
 
 ## Why
 
-The main gist is to hide the model until I rated it. Jev picks the right one on a given criteria. Bend2 establishes the laws of deciding it so. After a week or two of real tasks, I will know which agent actually earns each kind of job.
+The main gist is to hide the model until I rated it. Jev picks the role on a given criteria, and a deck picks the model for that role. Bend2 lays down the laws of how that plays out: how a deck deals, how a score turns into an outcome, and that nothing shows before the run ends. After a week or two of real tasks, I will know which agent actually earns each kind of job.
 
 Though slightly scientific, and kinda knowing Opus 5.5 will beat most of the charts, I thought this is a solid playground to give other models a shot, as well as offering some space for the underdogs.
+
+> [!IMPORTANT]
+> **Ground rule: the UI never reveals the model, and not the role either, while a run is open.** Knowing either one biases how you judge the work. Both show up only once you end the run, and by then the session is sealed.
 
 ## How a run goes
 
 This app uses [pi](https://github.com/earendil-works/pi) as the main harness and backend.
 
 1. You send the first prompt of a new pi session.
-2. A classifier reads it and picks a **role** (and a size: S, M or L). When it isn't sure, you get a one-key role picker.
+2. [Jev](#the-classifier) reads it and picks a **role** (and a size: S, M or L). When it's less than 60% sure, you pick the role yourself with one key.
 3. The extension deals the next model from that role's shuffled **deck**, so every contender gets an even share of runs and you can't predict the next one. The session sticks to that model.
-4. pi's footer shows the role
-5. `/done` asks how it went (nailed it, needed my fixes, failed) and for a score from 1 to 5. Then it reveals the model and appends the run to `runs.jsonl`.
+4. While you work, pi's footer and the app show neither the role nor the model, only that `/done` ends the run.
+5. **End the run** with `/done` (⌘D or the **End run** button in the app). It's the "end it all" button for the session:
+   - One card, one score. Press a key from 5 to 1, then ⏎:
 
-Roles marked `fanout` (short one-shot jobs like research or prose) run every contender in parallel instead. You see their answers as A, B, C, pick the best, and the winner continues the session.
+     | Key | Means | Logged as |
+     |---|---|---|
+     | 5 | nailed it, great | nailed it |
+     | 4 | nailed it, rough edges | nailed it |
+     | 3 | needed small fixes | needed my fixes |
+     | 2 | needed big fixes | needed my fixes |
+     | 1 | failed | failed |
+
+   - The digit only highlights a row. ⏎ commits, because ending can't be undone. Esc goes back to working.
+   - The session is then **sealed**: no more prompts, ⌘N (or `/new`) starts the next task.
+   - Only now do you see the role, the size and the model, and the run lands in `runs.jsonl`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/end-dark.png">
+  <img alt="Ending a run: five scores on one card, 4 highlighted, End run waits for Enter" src="docs/end-light.png">
+</picture>
+
+Roles marked `fanout` (short one-shot jobs like research or prose) run every contender in parallel instead. You see their answers as A, B, C, pick the best, and the winner continues the session. The role stays hidden there too.
 
 <img alt="A fan-out: three anonymous answers, picked by key" src="docs/fanout-light.png">
+
+## The classifier
+
+Jev is TypeSafe's classifier model (`typesafe/jev-latest`). TypeSafe isn't one of the labs on trial, so the classifier has no stake in who wins. For every first prompt it answers two questions:
+
+- **Role:** which of the roles below fits, judged against each role's `criteria`. Below 0.6 confidence (`classifier.minConfidence`), you pick the role, with Jev's guess listed first.
+- **Size:** S (minutes), M (under an hour) or L (hours or more). It's logged for the scoreboard and never routes anything.
+
+If Jev can't be reached, the run falls back to `builder`. `/role <name>` before the first prompt skips Jev. The scoreboard reports how often each of these decided the role.
+
+## The contenders
+
+From my `roles.json` for the first trial week (2026-11-09 to 2026-11-13):
+
+| Role | What lands here | Effort | Contenders |
+|---|---|---|---|
+| `errand-boy` | Chores under about 15 minutes: scaffolding, renames, shell or file work, brute-force repetition | medium | Opus 5.5, GPT-6.1 Sol, Kimi K3.1 Pro, Gemini 4 Argon |
+| `builder` | The goal is clear and the job is writing code in a repo | high | Opus 5.5, GPT-6.1 Sol |
+| `brainiac` | No clear path yet: diagnosing, architecture, nasty debugging, planning | xhigh | Opus 5.5, GPT-6 Astra |
+| `scout` (fan-out) | Research or comparison that needs the web | high | Opus 5.5, GPT-6 Astra, Kimi K3.1 Pro |
+| `scribe` (fan-out) | Prose: posts, docs, messages, copy | high | Opus 5.5, GPT-6 Astra, Gemini 4 Argon |
+
+Model IDs: `anthropic/claude-opus-5-5`, `openai/gpt-6.1-sol`, `openai/gpt-6-astra`, `google/gemini-4-argon` and `fireworks/accounts/fireworks/models/kimi-k3p1-pro`. `extension/roles.example.json` is this same config.
 
 ## What's here
 
@@ -38,6 +82,7 @@ Roles marked `fanout` (short one-shot jobs like research or prose) run every con
 | `extension/` | The pi extension: virtual model `whodunit/auto`, classifier, decks, fan-out, `/done` and `/role` |
 | `app/` | A macOS desktop frontend in Rust (built on [rune](https://github.com/anomalyco/rune)). It drives pi over RPC and adds a sidebar of sessions, a rating guard and a scoreboard page |
 | `scoreboard/` | A standalone Node scoreboard that prints Markdown |
+| `laws/` | The rules in [Bend2](https://github.com/bendlang/bend), with proofs, plus a check that the extension still follows them |
 
 ## Setup
 
@@ -71,8 +116,9 @@ scripts/bundle.sh    # installs ~/Applications/Whodunit.app
 ## Using it
 
 - One task per session: `/new` between tasks.
-- `/role` shows the current role, and `/role <name>` forces one before the first prompt.
-- `/done` on every run. Switching models by hand with `/model` logs the run as *failed* for the dealt agent.
+- `/role <name>` forces a role before the first prompt. Once a run is dealt, `/role` only tells you the role after `/done`.
+- `/done` (⌘D) on every run. Leaving an open run asks you to end it first.
+- Switching models by hand with `/model` ends nothing, but `/done` then logs the run as 1, *failed*, for the dealt agent, without asking.
 - Don't open `/session` before `/done`, because it names the model.
 
 ## Scoreboard
@@ -81,9 +127,23 @@ scripts/bundle.sh    # installs ~/Applications/Whodunit.app
 node scoreboard/scoreboard.mjs --since 2026-11-09 [--until 2026-11-14] [--no-reference]
 ```
 
-You get one table per role: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
+You get one table per role: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Above the tables, and under each role, a line shows who decided the role: Jev, the picker, `/role` or the fallback. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
 
 There's also a reference row computed from your last 30 days of Claude Code transcripts (`~/.claude/projects`). Pass `--no-reference` to leave it out. The app shows the same board on its Scoreboard page, or prints it with `whodunit -- --scoreboard`.
+
+## Laws
+
+`laws/` holds the rules in [Bend2](https://github.com/bendlang/bend), a language with proofs checked by its compiler:
+
+- `rules.bend`: the score-to-outcome mapping, what a switched run logs, what the UI may show of a deal, and how a deck deals.
+- `LAWS.bend`: the claims. A 5 is nailed and a 1 failed. A higher score never gets a worse outcome. A switched run logs 1, failed. Nothing about a deal shows before the run ends. A deck deals its own head before it refills. A fresh deck deals its whole shuffle, each card once, then runs dry.
+- `PROOF.bend`: the proofs.
+
+```sh
+node laws/check.mjs
+```
+
+The check runs the proofs, compiles `rules.bend` to JavaScript and compares it with `extension/rules.ts` on every score, a switched run and 2,000 random deals. It needs `bend` ([install](https://bend-lang.com)). The shuffle itself is random, so it stays outside the proofs: they show that a deck deals its shuffle fairly, not that the shuffle is fair.
 
 ## Data
 
@@ -91,7 +151,7 @@ Everything stays local, in `~/.pi/agent/whodunit/`:
 
 - `roles.json`: your config
 - `decks.json`: each role's remaining cards
-- `runs.jsonl`: one line per rated run
+- `runs.jsonl`: one line per deal, fan-out and ended run
 - `app.json`: the app's settings
 
 ## License

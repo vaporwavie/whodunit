@@ -89,3 +89,7 @@ Everything stays local, in `~/.pi/agent/whodunit/`:
 - `app.json`: the app's settings
 
 Session transcripts stay where pi keeps them.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

@@ -1,6 +1,7 @@
 # whodunit
 
-Blind trials for coding agents, run inside [pi](https://github.com/earendil-works/pi). Each task gets a hidden model, you score the run, and only then do you find out who did it.
+> The phrase whodunit is a grammatical abomination. Please use the proper term, a "who has done this".
+> -- Captain Raymond Holt
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/run-dark.png">
@@ -9,14 +10,18 @@ Blind trials for coding agents, run inside [pi](https://github.com/earendil-work
 
 ## Why
 
-Everyone has a favourite lab, and it leaks into how you judge the work. whodunit hides the model until after you've rated it. After a week or two of real tasks, you know which agent actually earns each kind of job.
+The main gist is to hide the model until I rated it. Jev picks the right one on a given criteria. Bend2 establishes the laws of deciding it so. After a week or two of real tasks, I will know which agent actually earns each kind of job.
+
+Though slightly scientific, and kinda knowing Opus 5.5 will beat most of the charts, I thought this is a solid playground to give other models a shot, as well as offering some space for the underdogs.
 
 ## How a run goes
+
+This app uses [pi](https://github.com/earendil-works/pi) as the main harness and backend.
 
 1. You send the first prompt of a new pi session.
 2. A classifier reads it and picks a **role** (and a size: S, M or L). When it isn't sure, you get a one-key role picker.
 3. The extension deals the next model from that role's shuffled **deck**, so every contender gets an even share of runs and you can't predict the next one. The session sticks to that model.
-4. pi's footer shows the role, never the model.
+4. pi's footer shows the role
 5. `/done` asks how it went (nailed it, needed my fixes, failed) and for a score from 1 to 5. Then it reveals the model and appends the run to `runs.jsonl`.
 
 Roles marked `fanout` (short one-shot jobs like research or prose) run every contender in parallel instead. You see their answers as A, B, C, pick the best, and the winner continues the session.
@@ -25,13 +30,14 @@ Roles marked `fanout` (short one-shot jobs like research or prose) run every con
 
 ## What's here
 
+> [!IMPORTANT]
+> This is a plain, simple-enough, rune app built on top of `pi`. It literally **does not work** if you don't have it installed. That said, **do not** install this on top of your current `pi` setup. That would be catastrophic. Rather, ask your agent to run a copy of `pi` dedicated to running this experiment. Also you don't even need the literal app to run this! You can just yoink the extension and the scoreboard if you hate my taste.
+
 | Path | What it is |
 |---|---|
 | `extension/` | The pi extension: virtual model `whodunit/auto`, classifier, decks, fan-out, `/done` and `/role` |
 | `app/` | A macOS desktop frontend in Rust (built on [rune](https://github.com/anomalyco/rune)). It drives pi over RPC and adds a sidebar of sessions, a rating guard and a scoreboard page |
 | `scoreboard/` | A standalone Node scoreboard that prints Markdown |
-
-You don't need the app. The extension works in plain pi.
 
 ## Setup
 
@@ -87,8 +93,6 @@ Everything stays local, in `~/.pi/agent/whodunit/`:
 - `decks.json`: each role's remaining cards
 - `runs.jsonl`: one line per rated run
 - `app.json`: the app's settings
-
-Session transcripts stay where pi keeps them.
 
 ## License
 

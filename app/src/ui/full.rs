@@ -479,7 +479,7 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
     let (placeholder, hint) = match (&core.t.week.deal, core.streaming) {
         (_, true) => ("Steer the agent…", "⌘⏎ queues a follow-up"),
         (None, _) => (
-            "Describe one task. Jev picks the role, the deck picks the agent.",
+            "What are we working on?",
             "⏎ sends",
         ),
         (Some(_), _) if core.t.week.done.is_some() => {

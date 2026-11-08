@@ -51,11 +51,52 @@ impl Row {
     }
 }
 
+/// Who decided each deal's role: Jev on its own, you in the picker, `/role`, or the fallback.
+#[derive(Clone, Debug, Default)]
+pub struct Decisions {
+    pub jev: usize,
+    pub picker: usize,
+    pub forced: usize,
+    pub fallback: usize,
+}
+
+impl Decisions {
+    pub fn add(&mut self, source: &str) {
+        match source {
+            "jev" => self.jev += 1,
+            "picker" => self.picker += 1,
+            "forced" => self.forced += 1,
+            _ => self.fallback += 1,
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.jev + self.picker + self.forced + self.fallback
+    }
+
+    /// "Jev 80% · picker 15% · /role 5% · fallback 0%", or None before the first deal.
+    pub fn line(&self) -> Option<String> {
+        let total = self.total();
+        if total == 0 {
+            return None;
+        }
+        let pct = |n: usize| (100.0 * n as f64 / total as f64).round();
+        Some(format!(
+            "Jev {}% · picker {}% · /role {}% · fallback {}%",
+            pct(self.jev),
+            pct(self.picker),
+            pct(self.forced),
+            pct(self.fallback)
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Table {
     pub role: String,
     pub fanout: bool,
     pub rows: Vec<Row>,
+    pub decisions: Decisions,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -71,6 +112,7 @@ pub struct Board {
     pub tables: Vec<Table>,
     pub reference: Reference,
     pub runs: usize,
+    pub decisions: Decisions,
 }
 
 fn median(values: &[f64]) -> Option<f64> {
@@ -169,16 +211,21 @@ pub fn compute_from(runs_file: &Path, claude_projects: &Path) -> Board {
                 role: role.clone(),
                 fanout: *fanout,
                 rows,
+                decisions: Decisions::default(),
             }
         })
         .collect();
 
+    let mut decisions = Decisions::default();
     for (session, deal) in &deals {
         let role = str_of(deal, "role");
         let agent = str_of(deal, "agent");
+        let source = str_of(deal, "source");
+        decisions.add(&source);
         let Some(table) = tables.iter_mut().find(|t| t.role == role) else {
             continue;
         };
+        table.decisions.add(&source);
         let file = str_of(deal, "sessionFile");
         let metrics = (!file.is_empty())
             .then(|| sessions::metrics(Path::new(&file)))
@@ -263,6 +310,7 @@ pub fn compute_from(runs_file: &Path, claude_projects: &Path) -> Board {
         tables,
         reference: claude_reference(claude_projects),
         runs: deals.len(),
+        decisions,
     }
 }
 
@@ -397,6 +445,9 @@ fn fmt(value: Option<f64>, digits: usize, suffix: &str) -> String {
 
 pub fn markdown(board: &Board) -> String {
     let mut out = format!("# Whodunit scoreboard\n\n{} runs logged.\n", board.runs);
+    if let Some(line) = board.decisions.line() {
+        out.push_str(&format!("\nRole decided by: {line}.\n"));
+    }
     for table in &board.tables {
         let ranked_by = if table.fanout {
             "fan-out win share"
@@ -404,6 +455,9 @@ pub fn markdown(board: &Board) -> String {
             "mean score"
         };
         out.push_str(&format!("\n## {} (ranked by {ranked_by})\n\n", table.role));
+        if let Some(line) = table.decisions.line() {
+            out.push_str(&format!("Role decided by: {line}.\n\n"));
+        }
         out.push_str("| agent | runs | nailed % | mean score | median your-min | cost/run | fan-out wins | unrated |\n|---|---|---|---|---|---|---|---|\n");
         for row in &table.rows {
             let name = if row.too_few() {

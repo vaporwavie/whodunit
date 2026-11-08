@@ -106,6 +106,7 @@ function piRun(sessionFile, fanout) {
 		at: Date.parse(deal.at),
 		role: deal.role,
 		agent: deal.agent,
+		source: deal.source,
 		outcome: switched ? "failed" : done?.outcome,
 		score: done?.score,
 		switched,
@@ -215,6 +216,20 @@ function claudeSession(path, prices, cutoff) {
 	return { ...timing, turnsAfterFirst: prompts - 1, costUsd };
 }
 
+const DECIDERS = [
+	["jev", "Jev"],
+	["picker", "picker"],
+	["forced", "/role"],
+	["fallback", "fallback"],
+];
+
+function decisionLine(runs) {
+	if (runs.length === 0) return undefined;
+	const known = new Set(DECIDERS.map(([source]) => source));
+	const count = (source) => runs.filter((run) => (known.has(run.source) ? run.source : "fallback") === source).length;
+	return DECIDERS.map(([source, label]) => `${label} ${pct(count(source), runs.length)}`).join(" · ");
+}
+
 function roleTable(roleName, role, runs, fanoutRecords, agentNames) {
 	const isFanout = Boolean(role.fanout);
 	const rows = role.contenders.map((agent) => {
@@ -244,6 +259,8 @@ function roleTable(roleName, role, runs, fanoutRecords, agentNames) {
 	rows.sort((a, b) => (a.tooFew === b.tooFew ? rankKey(b) - rankKey(a) || (a.costPerRun ?? Infinity) - (b.costPerRun ?? Infinity) : a.tooFew ? 1 : -1));
 
 	const lines = [`### ${roleName}${isFanout ? " (ranked by fan-out win share)" : " (ranked by mean score)"}`, ""];
+	const decided = decisionLine(runs.filter((run) => run.role === roleName));
+	if (decided) lines.push(`Role decided by: ${decided}.`, "");
 	lines.push("| agent | runs | nailed % | mean score | median your-min | cost/run | fan-out wins |");
 	lines.push("|---|---|---|---|---|---|---|");
 	for (const row of rows) {
@@ -262,6 +279,8 @@ function main() {
 	const out = ["# Whodunit scoreboard", ""];
 	const window = [args.since && `from ${args.since.toISOString().slice(0, 10)}`, args.until && `until ${args.until.toISOString().slice(0, 10)}`].filter(Boolean).join(" ");
 	out.push(`${runs.length} runs${window ? ` ${window}` : ""}. Rows with fewer than ${TOO_FEW} rated runs (fan-outs for scout and scribe) are *too few* and can't win. No significance claims.`, "");
+	const decided = decisionLine(runs);
+	if (decided) out.push(`Role decided by: ${decided}.`, "");
 	for (const [roleName, role] of Object.entries(config.roles)) {
 		out.push(roleTable(roleName, role, runs, fanoutRecords, config.agents), "");
 	}

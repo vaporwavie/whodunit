@@ -671,6 +671,14 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
         .font(k.ty.small)
         .color(c.text_muted),
     );
+    if let Some(line) = board.decisions.line() {
+        summary = summary.child(
+            text(format!("Role decided by {line}"))
+                .font(k.ty.small.features("'tnum' 1"))
+                .color(c.text_muted),
+        );
+    }
+    page = page.child(summary);
     for table in &board.tables {
         let ranked = if table.fanout {
             "ranked by fan-out wins"
@@ -688,6 +696,13 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
                 )
                 .child(text(ranked).font(k.ty.small).color(c.text_muted)),
         );
+        if let Some(line) = table.decisions.line() {
+            t = t.child(
+                text(format!("decided by {line}"))
+                    .font(k.ty.small.features("'tnum' 1"))
+                    .color(c.text_muted),
+            );
+        }
         let wins = table.fanout || table.rows.iter().any(|r| r.fanouts > 0);
         let mut header = row()
             .py(4.0)

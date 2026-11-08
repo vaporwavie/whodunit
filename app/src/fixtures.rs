@@ -323,13 +323,25 @@ fn board_row(
 
 /// The scoreboard page with a few weeks of runs.
 pub fn board() -> crate::scoreboard::Board {
-    use crate::scoreboard::{Board, Reference, Table};
+    use crate::scoreboard::{Board, Decisions, Reference, Table};
     Board {
         runs: 31,
+        decisions: Decisions {
+            jev: 24,
+            picker: 5,
+            forced: 2,
+            fallback: 0,
+        },
         tables: vec![
             Table {
                 role: "builder".into(),
                 fanout: false,
+                decisions: Decisions {
+                    jev: 14,
+                    picker: 3,
+                    forced: 1,
+                    fallback: 0,
+                },
                 rows: vec![
                     board_row("Opus 5.5", 9, 7, 39.0, &[4.0, 6.5, 3.0], 0.412, 0, 0),
                     board_row("GPT-6.1 Sol", 7, 4, 26.0, &[7.0, 9.5], 0.091, 0, 0),
@@ -348,6 +360,12 @@ pub fn board() -> crate::scoreboard::Board {
             Table {
                 role: "scribe".into(),
                 fanout: true,
+                decisions: Decisions {
+                    jev: 10,
+                    picker: 2,
+                    forced: 1,
+                    fallback: 0,
+                },
                 rows: vec![
                     board_row("GPT-6 Astra", 8, 6, 33.0, &[2.0, 1.5], 0.06, 8, 5),
                     board_row("Gemini 4 Argon", 5, 3, 19.0, &[2.5], 0.021, 8, 3),

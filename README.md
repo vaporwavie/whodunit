@@ -1,7 +1,8 @@
 # whodunit
 
-> The phrase whodunit is a grammatical abomination. Please use the proper term, a "who has done this".
-> -- Captain Raymond Holt
+> The phrase "whodunit" is a grammatical abomination. Please use the proper term, a "who has done this".
+>
+> — Captain Raymond Holt
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/run-dark.png">

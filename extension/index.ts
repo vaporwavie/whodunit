@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { draw, type Ending, SCORES, SWITCHED } from "./rules.ts";
 
 const PROVIDER = "whodunit";
 const MODEL_ID = "auto";
@@ -20,6 +21,7 @@ const FANOUT_PICK = "whodunit.fanout-pick";
 const FANOUT_TIMEOUT_MS = 20 * 60 * 1000;
 const FANOUT_TOOLS = "read,grep,find,ls,mcp__exa__*";
 const LABELS = ["A", "B", "C", "D"];
+const END_TITLE = "End this run";
 
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -87,9 +89,7 @@ function shuffle<T>(items: readonly T[]): T[] {
 function dealCard(role: string, contenders: string[]): string {
 	mkdirSync(DIR, { recursive: true });
 	const decks: Record<string, string[]> = existsSync(DECKS_PATH) ? JSON.parse(readFileSync(DECKS_PATH, "utf8")) : {};
-	const remaining = (decks[role] ?? []).filter((agent) => contenders.includes(agent));
-	const deck = remaining.length > 0 ? remaining : shuffle(contenders);
-	const [card, ...rest] = deck;
+	const { card, rest } = draw(decks[role] ?? [], contenders, () => shuffle(contenders));
 	decks[role] = rest;
 	const tmp = `${DECKS_PATH}.${process.pid}.tmp`;
 	writeFileSync(tmp, `${JSON.stringify(decks, null, 2)}\n`);
@@ -160,6 +160,11 @@ async function confirmRole(ctx: ExtensionContext, config: Config, classification
 	const choice = await ctx.ui.select("Jev isn't sure. Which role fits?", [suggested, ...others]);
 	if (!choice || choice === suggested) return classification;
 	return { ...classification, role: choice, source: "picker" };
+}
+
+async function askScore(ctx: ExtensionContext): Promise<Ending | undefined> {
+	const picked = await ctx.ui.select(END_TITLE, SCORES.map(({ label }) => label));
+	return SCORES.find(({ label }) => label === picked);
 }
 
 function textOf(message: { content?: unknown }): string {
@@ -255,7 +260,7 @@ async function fanOut(
 	const render = () => {
 		const elapsed = Math.round((Date.now() - started) / 1000);
 		const parts = order.map((_agent, index) => `${LABELS[index]} ${status[index]}`);
-		ctx.ui.setWidget(PROVIDER, [`${classification.role} fan-out · ${parts.join(" · ")} · ${elapsed}s`]);
+		ctx.ui.setWidget(PROVIDER, [`fan-out · ${parts.join(" · ")} · ${elapsed}s`]);
 	};
 	render();
 	const ticker = setInterval(render, 1000);
@@ -335,12 +340,15 @@ export default function (pi: ExtensionAPI) {
 	const children = new Set<ChildProcess>();
 	let forcedRole: string | undefined;
 
-	const footerLabel = (ctx: ExtensionContext) => () => {
-		const deal = findEntry<Deal>(ctx, DEAL);
-		const done = findEntry<{ outcome: string }>(ctx, DONE);
-		if (!deal) return forcedRole ? `whodunit · ${forcedRole} (forced) · waiting for first prompt` : "whodunit · waiting for first prompt";
-		const suffix = done ? " · rated" : " · /done when finished";
-		return `whodunit · ${deal.role} · ${deal.size}${suffix}`;
+	const footerLabel = (ctx: ExtensionContext) => {
+		const { agents } = loadConfig();
+		return () => {
+			const deal = findEntry<Deal>(ctx, DEAL);
+			const done = findEntry<{ score: number }>(ctx, DONE);
+			if (!deal) return forcedRole ? `whodunit · ${forcedRole} (forced) · waiting for first prompt` : "whodunit · waiting for first prompt";
+			if (!done) return "whodunit · /done ends the run";
+			return `whodunit · ${deal.role} · ${deal.size} · ${done.score}/5 · it was ${agents[deal.agent] ?? deal.agent} · ended`;
+		};
 	};
 
 	const recordDeal = (ctx: ExtensionContext, deal: Deal) => {
@@ -400,6 +408,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
 		if (!isWhodunit(ctx.model)) return { action: "continue" };
+		if (findEntry(ctx, DONE)) {
+			if (ctx.hasUI) ctx.ui.notify("This run has ended. /new for the next task.", "info");
+			return { action: "handled" };
+		}
 		if (findEntry<Deal>(ctx, DEAL)) return { action: "continue" };
 
 		const config = loadConfig();
@@ -429,7 +441,7 @@ export default function (pi: ExtensionAPI) {
 			setFooter(ctx, footerLabel(ctx));
 			return;
 		}
-		if (findEntry<Deal>(ctx, DEAL) && !findEntry(ctx, SWITCH)) {
+		if (findEntry<Deal>(ctx, DEAL) && !findEntry(ctx, DONE) && !findEntry(ctx, SWITCH)) {
 			pi.appendEntry(SWITCH, { to: `${event.model?.provider}/${event.model?.id}`, at: new Date().toISOString() });
 		}
 		if (ctx.hasUI) ctx.ui.setFooter(undefined);
@@ -444,7 +456,7 @@ export default function (pi: ExtensionAPI) {
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(theme.fg("dim", data.prompt)));
 		box.addChild(new Text(""));
-		box.addChild(new Text(theme.bold(`${data.role} fan-out: pick the best answer`)));
+		box.addChild(new Text(theme.bold("Fan-out: pick the best answer")));
 		for (const answer of data.answers) {
 			box.addChild(new Text(""));
 			box.addChild(new Text(theme.fg("accent", theme.bold(`── ${answer.label} ──`))));
@@ -463,7 +475,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("role", {
-		description: "Show the role, or force one before the first prompt: /role <name>",
+		description: "Force a role before the first prompt: /role <name>. The dealt role stays hidden until /done",
 		getArgumentCompletions: (prefix: string) => {
 			const names = Object.keys(loadConfig().roles).filter((name) => name.startsWith(prefix));
 			return names.length > 0 ? names.map((name) => ({ value: name, label: name })) : null;
@@ -473,12 +485,16 @@ export default function (pi: ExtensionAPI) {
 			const deal = findEntry<Deal>(ctx, DEAL);
 			const requested = args.trim();
 			if (!requested) {
-				const current = deal?.role ?? forcedRole ?? "not chosen yet";
-				ctx.ui.notify(`Role: ${current}`, "info");
+				if (!deal) {
+					ctx.ui.notify(forcedRole ? `Next prompt goes to ${forcedRole}` : "No role yet. Jev picks one from the first prompt.", "info");
+					return;
+				}
+				const ended = findEntry(ctx, DONE);
+				ctx.ui.notify(ended ? `Role: ${deal.role}` : "The role stays hidden until /done.", "info");
 				return;
 			}
 			if (deal) {
-				ctx.ui.notify(`The role is already ${deal.role} for this session. Use /new for a new task.`, "warning");
+				ctx.ui.notify("This session already has a role. Use /new for a new task.", "warning");
 				return;
 			}
 			if (!config.roles[requested]) {
@@ -492,7 +508,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("done", {
-		description: "Rate this run, then reveal which model did it",
+		description: "End this run: score it, seal the session, then see the role and who did it",
 		handler: async (_args, ctx) => {
 			const config = loadConfig();
 			const deal = findEntry<Deal>(ctx, DEAL);
@@ -500,24 +516,21 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("No whodunit run in this session yet.", "warning");
 				return;
 			}
+			const name = config.agents[deal.agent] ?? deal.agent;
 			const previous = findEntry<{ outcome: string; score: number }>(ctx, DONE);
 			if (previous) {
-				ctx.ui.notify(`Already rated: ${previous.outcome}, ${previous.score}/5. It was ${config.agents[deal.agent] ?? deal.agent}.`, "info");
+				ctx.ui.notify(`Already ended: ${previous.score}/5, ${previous.outcome}. It was ${name} (${deal.role}).`, "info");
 				return;
 			}
 			const switched = findEntry<{ to: string }>(ctx, SWITCH);
-			const outcomes = ["nailed it", "needed my fixes", "failed"];
-			const chosenOutcome = switched ? "failed" : await ctx.ui.select("How did it go?", outcomes);
-			if (!chosenOutcome) return;
-			if (switched) ctx.ui.notify(`You switched to ${switched.to} mid-run, so this run counts as failed.`, "warning");
-			const scoreChoice = await ctx.ui.select("Score, 1 (bad) to 5 (great)", ["5", "4", "3", "2", "1"]);
-			if (!scoreChoice) return;
-			const score = Number(scoreChoice);
-			const record = { outcome: chosenOutcome, score, switched: Boolean(switched) };
+			const chosen = switched ? SWITCHED : await askScore(ctx);
+			if (!chosen) return;
+			if (switched) ctx.ui.notify(`You switched to ${switched.to} mid-run, so this run counts as 1/5, failed.`, "warning");
+			const record = { outcome: chosen.outcome, score: chosen.score, switched: Boolean(switched) };
 			pi.appendEntry(DONE, { ...record, at: new Date().toISOString() });
 			appendRun({ type: "done", ...sessionRef(ctx), role: deal.role, agent: deal.agent, ...record });
 			setFooter(ctx, footerLabel(ctx));
-			ctx.ui.notify(`It was ${config.agents[deal.agent] ?? deal.agent}. Logged ${chosenOutcome}, ${score}/5.`, "info");
+			ctx.ui.notify(`It was ${name}, dealt as ${deal.role}. Logged ${chosen.score}/5, ${chosen.outcome}.`, "info");
 		},
 	});
 }

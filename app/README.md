@@ -17,7 +17,7 @@ Launched from Finder, the app runs your login shell once to find `pi` and your A
 
 ## Ending a run
 
-⌘D or the **End run** button opens the score card. A digit from 5 to 1 only highlights a row, and ⏎ commits, because ending can't be undone. Esc goes back to working. Once ended, the composer is disabled and ⌘N starts the next task.
+⌘D or the **End run** button opens the score card. A digit from 5 to 1 only highlights a row, and ⏎ commits, because ending can't be undone. Esc goes back to working. Once ended, the composer gives way to a **New task** button (⌘N).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../docs/end-dark.png">
@@ -52,6 +52,7 @@ Typing filters both lists and selects the first match. **Go up**, always the fir
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |
 | ⌘⏎ | Queue a follow-up while the agent works |
+| Tab / ⏎ | In the `/` list: complete the command / run it (commands that need an argument are completed instead) |
 | Esc | Stop the agent |
 
 ## Command line

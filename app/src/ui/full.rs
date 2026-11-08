@@ -11,7 +11,10 @@ use rune_kit::shell::{
     self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
     SplitView, Toolbar,
 };
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit, ProgressCircle, TextArea, popover};
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle,
+    TextArea, popover,
+};
 
 use crate::config;
 use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key};
@@ -36,6 +39,16 @@ static FOLDER: Icon = Icon {
     name: "aw-folder",
     view: 16.0,
     body: r#"<path d="M2.5 4.5H6.5L8 6H13.5V12.5H2.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/>"#,
+};
+static SEND: Icon = Icon {
+    name: "aw-send",
+    view: 16.0,
+    body: r#"<path d="M8 12.5V3.5M4 7.5L8 3.5L12 7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static STOP: Icon = Icon {
+    name: "aw-stop",
+    view: 16.0,
+    body: r#"<rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor"/>"#,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -200,33 +213,43 @@ fn composer_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         Key::Enter if ev.mods.shift => false,
-        Key::Up | Key::Down | Key::Tab | Key::Enter => slash_key(s, &ev.key),
+        Key::Up | Key::Down | Key::Tab | Key::Enter => slash_key(s, &ev.key, tx),
         _ => false,
     }
 }
 
-/// ↑/↓ move the slash list's highlight; Tab completes it, and so does ⏎ until the text is that command.
-fn slash_key(s: &mut FullUi, key: &Key) -> bool {
+/// ↑/↓ move the slash list's highlight, Tab completes it, ⏎ runs it.
+fn slash_key(s: &mut FullUi, key: &Key, tx: &mut Tx) -> bool {
     let matches = slash_matches(&s.composer.text, &lock(&s.core));
     if matches.is_empty() {
         return false;
     }
     let count = matches.len();
     let index = s.slash_index().min(count - 1);
-    let step = match key {
-        Key::Up => count - 1,
-        Key::Down => 1,
-        _ => {
-            let (name, _) = &matches[index];
-            if matches!(key, Key::Enter) && s.composer.text == format!("/{name}") {
-                return false;
-            }
-            s.composer.replace_text(format!("/{name} "));
-            return true;
-        }
-    };
-    s.slash_pick = (s.composer.text.clone(), (index + step) % count);
+    let (name, description) = &matches[index];
+    match key {
+        Key::Up => s.slash_pick = (s.composer.text.clone(), (index + count - 1) % count),
+        Key::Down => s.slash_pick = (s.composer.text.clone(), (index + 1) % count),
+        Key::Tab => s.composer.replace_text(format!("/{name} ")),
+        _ => choose_slash(s, name, description, tx),
+    }
     true
+}
+
+/// pi reports no arity, so a `<arg>` in the description marks a command that needs one.
+fn needs_argument(description: &str) -> bool {
+    description.contains('<')
+}
+
+/// ⏎ or a click on a slash row: run the command, or type it out when it still needs an argument.
+fn choose_slash(s: &mut FullUi, name: &str, description: &str, tx: &mut Tx) {
+    s.composer.focused = true;
+    if needs_argument(description) {
+        s.composer.replace_text(format!("/{name} "));
+        return;
+    }
+    s.composer.replace_text(format!("/{name}"));
+    submit(s, tx, false);
 }
 
 fn slash_matches(input: &str, core: &Core) -> Vec<(String, String)> {
@@ -411,7 +434,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
     sb.build(k)
 }
 
-/// One footer height for every state, so a hint or a Stop button never moves the transcript.
+/// One footer height for every state, so the busy line or the meter never moves the transcript.
 const FOOTER_H: f32 = 24.0;
 /// Names and descriptions sit in two columns, so every row shares one height.
 const SLASH_ROW_H: f32 = 28.0;
@@ -436,6 +459,21 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
         .fill(c.hover);
     let mut names = col().pl(10.0).pr(12.0);
     let mut descriptions = col().grow(1.0).shrink().min_w(0.0).pr(8.0);
+    let mut hits = col().pin(Some(0.0), Some(0.0), Some(0.0), None);
+    for (index, (name, description)) in matches.iter().enumerate() {
+        let (target, about) = (name.clone(), description.clone());
+        hits = hits.child(
+            row()
+                .w_full()
+                .h(SLASH_ROW_H)
+                .role("button")
+                .label(format!("/{name}"))
+                .on_pointer_move(move |s: &mut FullUi, _| {
+                    s.slash_pick = (s.composer.text.clone(), index);
+                })
+                .on_press_tx(move |s: &mut FullUi, tx| choose_slash(s, &target, &about, tx)),
+        );
+    }
     for (name, description) in matches {
         names =
             names.child(cell().child(text(format!("/{name}")).font(k.ty.mono).color(c.text_base)));
@@ -454,7 +492,8 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
             .w_full()
             .child(highlight)
             .child(names)
-            .child(descriptions),
+            .child(descriptions)
+            .child(hits),
     );
     Some(
         popover::raised(k, list, k.radius.lg)
@@ -464,9 +503,12 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
     )
 }
 
-fn composer_footer(core: &Core, hint: &str, k: &Kit) -> El {
+fn composer_footer(s: &FullUi, core: &Core, k: &Kit) -> El {
     let c = &k.c;
     let mut status = row().gap(8.0).center_y().grow(1.0).shrink().min_w(0.0);
+    if let Some(mode) = shell_mode(&s.composer.text) {
+        status = status.child(parts::chip(mode, k));
+    }
     if let Some(line) = parts::busy_line(core) {
         status = status
             .child(rune_kit::Spinner::new().size(12.0).build(k))
@@ -485,30 +527,58 @@ fn composer_footer(core: &Core, hint: &str, k: &Kit) -> El {
         .key("composer-footer")
         .w_full()
         .h(FOOTER_H)
-        .px(8.0)
-        .gap(8.0)
+        .pl(8.0)
+        .gap(10.0)
         .center_y()
-        .child(status)
-        .child(text(hint.to_owned()).font(k.ty.small).color(c.text_faint));
-    if core.streaming {
-        footer = footer.child(
-            Button::new("Stop")
-                .variant(ButtonVariant::Ghost)
-                .control_size(ControlSize::Small)
-                .shortcut("esc")
-                .show_shortcut()
-                .on_press(|s: &mut FullUi| lock(&s.core).abort())
-                .build(k)
-                .key("stop"),
-        );
+        .child(status);
+    if let Some(meter) = context_meter(core, k) {
+        footer = footer.child(meter);
     }
-    footer.child(context_meter(core, k))
+    footer.child(send_button(s, core, k))
 }
 
-/// Shown from the first frame: 0% until pi reports usage.
-fn context_meter(core: &Core, k: &Kit) -> El {
-    let percent = core.stats.context_percent.unwrap_or(0.0);
-    row()
+/// `!` runs a shell command and `!!` keeps its output out of the agent's context.
+fn shell_mode(input: &str) -> Option<&'static str> {
+    if input.starts_with("!!") {
+        return Some("shell · kept out of context");
+    }
+    if input.starts_with('!') {
+        return Some("shell");
+    }
+    None
+}
+
+/// One slot that is Stop while the agent works on an empty field and Send otherwise, so swapping never moves the footer.
+fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
+    let empty = s.composer.text.trim().is_empty();
+    if core.streaming && empty {
+        return IconButton::new(&STOP)
+            .variant(IconButtonVariant::Submit)
+            .label("Stop")
+            .shortcut("esc")
+            .on_press(|s: &mut FullUi| lock(&s.core).abort())
+            .build(k)
+            .key("send");
+    }
+    let button = IconButton::new(&SEND)
+        .variant(if empty {
+            IconButtonVariant::GhostMuted
+        } else {
+            IconButtonVariant::Submit
+        })
+        .disabled(empty)
+        .on_press_tx(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false));
+    let button = if core.streaming {
+        button.label("Steer").help("Steer  ⏎ · Queue  ⌘⏎")
+    } else {
+        button.label("Send").shortcut("⏎")
+    };
+    button.build(k).key("send")
+}
+
+fn context_meter(core: &Core, k: &Kit) -> Option<El> {
+    let percent = core.stats.context_percent.filter(|p| p.round() > 0.0)?;
+    let meter = row()
         .key("context-meter")
         .gap(6.0)
         .center_y()
@@ -522,25 +592,21 @@ fn context_meter(core: &Core, k: &Kit) -> El {
             text(format!("{percent:.0}%"))
                 .font(k.ty.small.features("'tnum' 1"))
                 .color(k.c.text_muted),
-        )
+        );
+    Some(meter)
 }
 
 fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
-    let (placeholder, hint) = match (&core.t.week.deal, core.streaming) {
-        (_, true) => ("Steer the agent…", "⌘⏎ queues a follow-up"),
-        (None, _) => ("What are we working on?", "⏎ sends"),
-        (Some(_), _) if core.t.week.done.is_some() => {
-            ("This run has ended. ⌘N for the next task.", "")
-        }
-        (Some(_), _) => ("Reply…", "⌘D ends the run · !cmd runs a shell command"),
+    let placeholder = match (&core.t.week.deal, core.streaming) {
+        (_, true) => "Steer the agent…",
+        (None, _) => "What are we working on?",
+        (Some(_), _) => "Reply…",
     };
-    let sealed = core.t.week.done.is_some();
     let field = TextArea::new(&s.composer)
         .plain()
         .placeholder(placeholder)
         .width(None)
         .auto_grow(2, 10)
-        .disabled(sealed)
         .on_edit(|s: &mut FullUi| &mut s.composer)
         .on_submit(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false))
         .on_key(composer_key)
@@ -550,10 +616,15 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
         .key("composer-frame")
         .padding(6.0)
         .child(field)
-        .child(composer_footer(core, hint, k));
-    let mut column = col().w_full().gap(8.0);
+        .child(composer_footer(s, core, k));
+    let mut column = col().w_full();
     if let Some(list) = slash_list(&s.composer.text, s.slash_index(), core, k) {
-        column = column.child(list);
+        // A zero-height shelf the list hangs above, so opening it never moves the intro or the transcript.
+        let shelf = row()
+            .w_full()
+            .h(0.0)
+            .child(list.pin(Some(0.0), None, Some(0.0), Some(8.0)));
+        column = column.child(shelf);
     }
     column.child(frame)
 }
@@ -582,6 +653,46 @@ fn empty_intro(k: &Kit) -> El {
                 .color(c.text_muted)
                 .wrap(),
         )
+}
+
+/// A sealed session takes no more input, so the composer gives way to the next step.
+fn ended(k: &Kit) -> El {
+    let c = &k.c;
+    parts::panel(k, false).key("ended").padding(16.0).child(
+        row()
+            .gap(16.0)
+            .center_y()
+            .child(
+                col()
+                    .gap(4.0)
+                    .grow(1.0)
+                    .shrink()
+                    .min_w(0.0)
+                    .child(
+                        text("This run has ended")
+                            .font(k.ty.body_medium)
+                            .color(c.text_base),
+                    )
+                    .child(
+                        text("It’s scored and sealed. The next task starts in a new session.")
+                            .font(k.ty.small)
+                            .color(c.text_muted)
+                            .wrap(),
+                    ),
+            )
+            .child(
+                Button::new("New task")
+                    .variant(ButtonVariant::Contrast)
+                    .shortcut("⌘N")
+                    .show_shortcut()
+                    .on_press(|s: &mut FullUi| {
+                        s.page = Page::Chat;
+                        s.composer.focused = true;
+                        lock(&s.core).request_leave(Leave::New);
+                    })
+                    .build(k),
+            ),
+    )
 }
 
 /// No message yet: the intro and the shoreline show.
@@ -625,6 +736,8 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
         })
     {
         bottom = bottom.child(dialog);
+    } else if core.t.week.done.is_some() {
+        bottom = bottom.child(ended(k));
     } else {
         bottom = bottom.child(composer(s, core, k));
     }
@@ -870,7 +983,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
         .toolbar_in_panel()
-        .sidebar_padding(18.0, 10.0)
+        .sidebar_padding(8.0, 10.0)
         .sidebar_toggle(
             SidebarToggle::new()
                 .size(ControlSize::Large)

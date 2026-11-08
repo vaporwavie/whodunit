@@ -74,6 +74,14 @@ fn main() {
                 fixtures::scene_slash(&s.core);
                 s.composer.replace_text("/");
             }),
+            ("slash-empty", |s: &mut FullUi| {
+                fixtures::scene_empty(&s.core);
+                s.composer.replace_text("/");
+            }),
+            ("shell", |s: &mut FullUi| {
+                fixtures::scene_chat(&s.core);
+                s.composer.replace_text("!cargo test");
+            }),
             ("growing", |s: &mut FullUi| fixtures::scene_growing(&s.core)),
             ("picker", |s: &mut FullUi| {
                 fixtures::scene_chat(&s.core);

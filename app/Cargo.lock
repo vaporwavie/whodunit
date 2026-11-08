@@ -3778,6 +3778,7 @@ dependencies = [
  "rune-theme-opencode",
  "serde",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

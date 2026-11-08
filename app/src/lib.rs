@@ -10,6 +10,7 @@ pub mod scoreboard;
 pub mod sessions;
 pub mod transcript;
 pub mod ui {
+    pub mod dither;
     pub mod folder_picker;
     pub mod full;
     pub mod parts;

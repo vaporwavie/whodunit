@@ -1,6 +1,7 @@
 //! The default mode: an ordinary agent chat window (sessions, transcript, composer) under the week's rules.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rune::{
@@ -17,6 +18,7 @@ use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::transcript::Item;
+use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
 
@@ -50,6 +52,9 @@ pub struct FullUi {
     pub page: Page,
     pub board: Option<Board>,
     pub picker: FolderPicker,
+    window_focused: bool,
+    /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
+    reduced_motion: AtomicBool,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: u64,
@@ -76,6 +81,8 @@ impl FullUi {
             page: Page::Chat,
             board: None,
             picker: FolderPicker::default(),
+            window_focused: false,
+            reduced_motion: AtomicBool::new(false),
             slash_pick: (String::new(), 0),
             seen: 0,
             seen_session: None,
@@ -90,6 +97,16 @@ impl FullUi {
             return 0;
         }
         *index
+    }
+
+    fn shore_motion(&self) -> dither::Motion {
+        if self.reduced_motion.load(Ordering::Relaxed) {
+            return dither::Motion::Still;
+        }
+        if !self.window_focused {
+            return dither::Motion::Paused;
+        }
+        dither::Motion::Live
     }
 
     fn open_scoreboard(&mut self) {
@@ -308,11 +325,15 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
             s.dialog_edit.focused = true;
         }
     }
+    let shore = s.page == Page::Chat && blank(&core) && s.shore_motion() == dither::Motion::Live;
     drop(core);
     if switched {
         tx.scroll_to_bottom_instant("transcript");
     }
-    changed
+    if shore {
+        tx.wake_after(dither::FRAME);
+    }
+    changed || shore
 }
 
 fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
@@ -563,14 +584,19 @@ fn empty_intro(k: &Kit) -> El {
         )
 }
 
-fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
+/// No message yet: the intro and the shoreline show.
+fn blank(core: &Core) -> bool {
+    core.t.items.is_empty() && core.pending_prompt.is_none()
+}
+
+fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     let fanout = core
         .t
         .items
         .iter()
         .any(|item| matches!(item, Item::Fanout { .. }));
     let width = if fanout { FANOUT_COLUMN } else { COLUMN };
-    let empty = core.t.items.is_empty() && core.pending_prompt.is_none();
+    let empty = blank(core);
     let body: El = if empty {
         col()
     } else {
@@ -602,7 +628,11 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit) -> El {
     } else {
         bottom = bottom.child(composer(s, core, k));
     }
-    col().w_full().h_full().min_h(0.0).child(scroll).child(
+    let mut stage = col().w_full().h_full().min_h(0.0).clip_rounded(0.0);
+    if empty {
+        stage = stage.child(dither::slot(dark, s.shore_motion()));
+    }
+    stage.child(scroll).child(
         col()
             .w_full()
             .items_center()
@@ -822,9 +852,11 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
 pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let core = lock(&s.core);
+    s.reduced_motion
+        .store(cx.is_reduced_motion(), Ordering::Relaxed);
     let main = match (s.page, &s.board) {
         (Page::Scoreboard, Some(board)) => scoreboard_page(board, k),
-        _ => chat(s, &core, k),
+        _ => chat(s, &core, k, cx.system_dark()),
     };
     let mut overlays = Vec::new();
     folder_picker::build(s, k, &mut overlays);
@@ -851,6 +883,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         .reduced_motion(cx.is_reduced_motion())
         .build(k);
     rune_kit::root(window, overlays).on_window_focus(|s: &mut FullUi, focused, tx| {
+        s.window_focused = focused;
         if !focused {
             folder_picker::release_cmd(s, tx);
         }

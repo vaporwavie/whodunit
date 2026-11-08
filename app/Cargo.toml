@@ -16,6 +16,7 @@ rune-theme-opencode = { git = "https://github.com/vaporwavie/rune", rev = "b252b
 rune-mac = { git = "https://github.com/vaporwavie/rune", rev = "b252ba439fc8f884c0e10ba0b95aab075cdec7b8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"

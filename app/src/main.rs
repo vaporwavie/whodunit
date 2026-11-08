@@ -100,6 +100,7 @@ fn main() {
         )
     };
     let full_app = App::new(full_spec)
+        .compositor(whodunit::ui::dither::Waves::default())
         .chrome(Chrome {
             full_size_content: true,
             traffic_lights: Some((16.0, 25.0)),

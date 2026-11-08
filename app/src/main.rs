@@ -114,8 +114,9 @@ fn main() {
             traffic_lights: Some((16.0, 25.0)),
             drag_regions: true,
         })
-        .modifier_keys()
-        .keep_running();
+        .modifier_keys();
+    #[cfg(target_os = "macos")]
+    let full_app = full_app.keep_running();
     let full_handle = full_app.handle();
     let full_core = shared.clone();
     let full_app = full_app.init(move || FullUi::new(full_core));

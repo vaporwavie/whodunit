@@ -2527,6 +2527,7 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 [[package]]
 name = "rune"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2603,6 +2604,7 @@ dependencies = [
 [[package]]
 name = "rune-kit"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "pulldown-cmark",
  "rune",
@@ -2613,6 +2615,7 @@ dependencies = [
 [[package]]
 name = "rune-mac"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "objc2 0.5.3",
  "rune-notify",
@@ -2621,10 +2624,12 @@ dependencies = [
 [[package]]
 name = "rune-motion"
 version = "0.1.0"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 
 [[package]]
 name = "rune-notify"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
@@ -2635,6 +2640,7 @@ dependencies = [
 [[package]]
 name = "rune-staging"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "wgpu",
 ]
@@ -2642,6 +2648,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "taffy",
 ]
@@ -2649,6 +2656,7 @@ dependencies = [
 [[package]]
 name = "rune-theme-opencode"
 version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=b252ba439fc8f884c0e10ba0b95aab075cdec7b8#b252ba439fc8f884c0e10ba0b95aab075cdec7b8"
 dependencies = [
  "rune",
  "rune-kit",

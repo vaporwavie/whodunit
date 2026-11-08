@@ -41,9 +41,19 @@ pub fn session_dir(cwd: &Path) -> PathBuf {
 pub struct AppConfig {
     #[serde(default)]
     pub pi_bin: String,
+    /// Folders pi ran in from the app, newest first, for the folder picker and the next launch.
     #[serde(default)]
-    pub last_cwd: Option<PathBuf>,
+    pub recent: Vec<RecentDir>,
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecentDir {
+    pub path: PathBuf,
+    /// Unix seconds.
+    pub at: u64,
+}
+
+const RECENT_LIMIT: usize = 12;
 
 impl AppConfig {
     fn file() -> PathBuf {
@@ -55,6 +65,28 @@ impl AppConfig {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
+    }
+
+    pub fn remember(&mut self, path: &Path) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.recent.retain(|r| r.path != path);
+        self.recent.insert(
+            0,
+            RecentDir {
+                path: path.to_owned(),
+                at,
+            },
+        );
+        self.recent.truncate(RECENT_LIMIT);
+    }
+
+    pub fn last_cwd(&self) -> Option<PathBuf> {
+        self.recent
+            .iter()
+            .map(|r| r.path.clone())
+            .find(|p| p.is_dir())
     }
 
     pub fn save(&self) {

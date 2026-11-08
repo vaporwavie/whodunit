@@ -401,3 +401,39 @@ pub fn board() -> crate::scoreboard::Board {
         },
     }
 }
+
+/// ⌘O's folder picker over the chat: recents on top, the browsed folder's subfolders below.
+pub fn picker() -> crate::ui::folder_picker::FolderPicker {
+    use std::time::{Duration, SystemTime};
+    let home = crate::config::home();
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let recent = |path: &str, ago: u64| crate::folders::Recent {
+        path: home.join(path),
+        at: now - Duration::from_secs(ago),
+    };
+    crate::ui::folder_picker::FolderPicker::with(
+        home.join("Workspace"),
+        [
+            "dotfiles",
+            "harness",
+            "launch-site",
+            "rune",
+            "uploader",
+            "vault",
+            "whodunit",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        vec![
+            recent("Workspace/uploader", 40 * 60),
+            recent("Workspace/launch-site", 5 * 3_600),
+            crate::folders::Recent {
+                path: home.clone(),
+                at: now - Duration::from_secs(22 * 3_600),
+            },
+            recent("Workspace/rune", 2 * 86_400),
+            recent("Documents/recipes", 9 * 86_400),
+        ],
+        now,
+    )
+}

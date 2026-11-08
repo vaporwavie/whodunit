@@ -32,6 +32,16 @@ A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) 
 
 <img alt="A fan-out: three anonymous answers, picked by key" src="../docs/fanout-light.png">
 
+## Folder picker
+
+⌘O, or the folder row at the bottom of the sidebar, opens the folder picker.
+
+The top list is recent folders, newest first: the ones you opened here and the ones plain pi ran in. The folder pi runs in now isn't listed, since ⌘N already starts a new task there. Below the recents is the current folder's parent, so your other projects are one ↓ away.
+
+⏎ works one level at a time. When the picker opens nothing is selected, and ⏎ runs pi in the folder it's browsing. ⏎ on a subfolder, or on Go up, opens that folder with its first subfolder selected, so ⏎ keeps going down, or Go up when it has none. Recent folders skip the step and run pi on the first ⏎.
+
+Typing filters both lists and selects the first match. **Go up**, always the first row under Browse, opens its parent, as ⌫ or ← on an empty filter does. Hold ⌘ and the button turns into **Select ⌘⏎**: it runs pi in the folder you're browsing, whatever is selected.
+
 ## Keys
 
 | Key | Does |
@@ -40,7 +50,7 @@ A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) 
 | ⌘N | New task |
 | ⌘1 | Chat |
 | ⌘2 | Scoreboard |
-| ⌘O | Run pi in another folder |
+| ⌘O | Pick the folder pi runs in |
 | ⌘⏎ | Queue a follow-up while the agent works |
 | Esc | Stop the agent |
 

@@ -45,7 +45,7 @@ fn main() {
     };
     let cwd = flag_value(&args, "--cwd")
         .map(PathBuf::from)
-        .or_else(|| config.last_cwd.clone().filter(|p| p.is_dir()))
+        .or_else(|| config.last_cwd())
         .unwrap_or_else(config::home);
     let shared: Shared = Arc::new(Mutex::new(Core::new(config, cwd)));
     if !headless {
@@ -75,6 +75,16 @@ fn main() {
                 s.composer.replace_text("/");
             }),
             ("growing", |s: &mut FullUi| fixtures::scene_growing(&s.core)),
+            ("picker", |s: &mut FullUi| {
+                fixtures::scene_chat(&s.core);
+                s.picker = fixtures::picker();
+                s.composer.focused = false;
+            }),
+            ("picker-cmd", |s: &mut FullUi| {
+                fixtures::scene_chat(&s.core);
+                s.picker = fixtures::picker().holding_cmd();
+                s.composer.focused = false;
+            }),
             ("board", |s: &mut FullUi| {
                 fixtures::scene_chat(&s.core);
                 s.board = Some(fixtures::board());
@@ -95,6 +105,7 @@ fn main() {
             traffic_lights: Some((16.0, 25.0)),
             drag_regions: true,
         })
+        .modifier_keys()
         .keep_running();
     let full_handle = full_app.handle();
     let full_core = shared.clone();

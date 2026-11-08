@@ -171,6 +171,10 @@ impl Core {
         self.wakers.push(waker);
     }
 
+    pub fn wakers(&self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
+        self.wakers.clone()
+    }
+
     fn touch(&mut self) {
         self.version += 1;
     }
@@ -854,9 +858,9 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>) {
     let (spec_bin, cwd, generation) = {
         let mut core = lock(shared);
         if let Some(cwd) = cwd {
-            core.cwd = cwd;
-            core.config.last_cwd = Some(core.cwd.clone());
+            core.config.remember(&cwd);
             core.config.save();
+            core.cwd = cwd;
         }
         core.pi = None;
         core.generation += 1;

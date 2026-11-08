@@ -1,12 +1,10 @@
 //! The default mode: an ordinary agent chat window (sessions, transcript, composer) under the week's rules.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rune::{
-    Cx, El, FileDialogOptions, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Transition, Tx,
-    col, row, text,
+    Cx, El, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Transition, Tx, col, row, text,
 };
 use rune_kit::shell::{
     self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
@@ -15,10 +13,11 @@ use rune_kit::shell::{
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, ProgressCircle, TextArea, popover};
 
 use crate::config;
-use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key, start_pi};
+use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key};
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::transcript::Item;
+use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
 
 static PLUS: Icon = Icon {
@@ -50,6 +49,7 @@ pub struct FullUi {
     pub sidebar: PaneState,
     pub page: Page,
     pub board: Option<Board>,
+    pub picker: FolderPicker,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: u64,
@@ -75,6 +75,7 @@ impl FullUi {
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             page: Page::Chat,
             board: None,
+            picker: FolderPicker::default(),
             slash_pick: (String::new(), 0),
             seen: 0,
             seen_session: None,
@@ -232,6 +233,13 @@ fn slash_matches(input: &str, core: &Core) -> Vec<(String, String)> {
 }
 
 pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.picker.open {
+        if ev.is_command('o') {
+            folder_picker::close(s);
+            return true;
+        }
+        return folder_picker::on_key(s, ev, tx);
+    }
     if dialog_keys(&mut lock(&s.core), ev, true) {
         return true;
     }
@@ -250,7 +258,7 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('o') {
-        pick_folder(tx);
+        folder_picker::show(s);
         return true;
     }
     if ev.is_command('1') {
@@ -268,25 +276,13 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
     false
 }
 
-fn pick_folder(tx: &mut Tx) {
-    let options = FileDialogOptions {
-        title: "Run pi in which folder?".into(),
-        ..Default::default()
-    };
-    tx.open_folder(options, |s: &mut FullUi, result, _tx| {
-        if let Ok(Some(path)) = result {
-            let core = s.core.clone();
-            std::thread::spawn(move || start_pi(&core, Some(PathBuf::from(path))));
-        }
-    });
-}
-
 pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     let mut core = lock(&s.core);
     if let Some(next) = core.expire_toasts() {
         tx.wake_after(next + Duration::from_millis(50));
     }
-    let mut changed = core.version != s.seen;
+    let picker = s.picker.poll();
+    let mut changed = core.version != s.seen || picker;
     s.seen = core.version;
     let switched = core.session_file != s.seen_session;
     if switched {
@@ -375,7 +371,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 .icon(&FOLDER)
                 .detail("⌘O")
                 .height(32.0)
-                .on_select(|_: &mut FullUi, tx| pick_folder(tx))
+                .on_select(|s: &mut FullUi, _| folder_picker::show(s))
                 .build(k)
                 .key("folder"),
         );
@@ -830,7 +826,9 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         (Page::Scoreboard, Some(board)) => scoreboard_page(board, k),
         _ => chat(s, &core, k),
     };
-    SplitView::new(main)
+    let mut overlays = Vec::new();
+    folder_picker::build(s, k, &mut overlays);
+    let window = SplitView::new(main)
         .sidebar(
             &s.sidebar,
             |s: &mut FullUi| &mut s.sidebar,
@@ -851,7 +849,12 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         )
         .pane_motion(PaneMotion::new().spring(Spring::new(0.3, 0.0)))
         .reduced_motion(cx.is_reduced_motion())
-        .build(k)
+        .build(k);
+    rune_kit::root(window, overlays).on_window_focus(|s: &mut FullUi, focused, tx| {
+        if !focused {
+            folder_picker::release_cmd(s, tx);
+        }
+    })
 }
 
 pub fn setup(s: &mut FullUi, waker: rune::Waker) {

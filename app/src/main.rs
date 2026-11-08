@@ -69,6 +69,10 @@ fn main() {
             ("guard", |s: &mut FullUi| fixtures::scene_guard(&s.core)),
             ("long", |s: &mut FullUi| fixtures::scene_long(&s.core)),
             ("busy", |s: &mut FullUi| fixtures::scene_busy(&s.core)),
+            ("slash", |s: &mut FullUi| {
+                fixtures::scene_slash(&s.core);
+                s.composer.replace_text("/");
+            }),
             ("growing", |s: &mut FullUi| fixtures::scene_growing(&s.core)),
             ("board", |s: &mut FullUi| {
                 fixtures::scene_chat(&s.core);

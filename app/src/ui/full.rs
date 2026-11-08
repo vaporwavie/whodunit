@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rune::{
-    Cx, El, FileDialogOptions, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Tx, col, row,
-    text,
+    Cx, El, FileDialogOptions, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Transition, Tx,
+    col, row, text,
 };
 use rune_kit::shell::{
     self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
@@ -50,6 +50,8 @@ pub struct FullUi {
     pub sidebar: PaneState,
     pub page: Page,
     pub board: Option<Board>,
+    /// The slash list's highlighted row, for the composer text it was moved on.
+    slash_pick: (String, usize),
     seen: u64,
     seen_session: Option<String>,
     editor_generation: u64,
@@ -73,11 +75,20 @@ impl FullUi {
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             page: Page::Chat,
             board: None,
+            slash_pick: (String::new(), 0),
             seen: 0,
             seen_session: None,
             editor_generation: 0,
             dialog_generation: 0,
         }
+    }
+
+    fn slash_index(&self) -> usize {
+        let (input, index) = &self.slash_pick;
+        if *input != self.composer.text {
+            return 0;
+        }
+        *index
     }
 
     fn open_scoreboard(&mut self) {
@@ -170,31 +181,34 @@ fn composer_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
             submit(s, tx, true);
             true
         }
-        Key::Tab => {
-            let Some(done) = complete(&s.composer.text, &lock(&s.core)) else {
-                return false;
-            };
-            s.composer.replace_text(done);
-            true
-        }
+        Key::Enter if ev.mods.shift => false,
+        Key::Up | Key::Down | Key::Tab | Key::Enter => slash_key(s, &ev.key),
         _ => false,
     }
 }
 
-/// `/do` + Tab → `/done `.
-fn complete(input: &str, core: &Core) -> Option<String> {
-    let prefix = input.strip_prefix('/')?;
-    if prefix.contains(' ') {
-        return None;
+/// ↑/↓ move the slash list's highlight; Tab completes it, and so does ⏎ until the text is that command.
+fn slash_key(s: &mut FullUi, key: &Key) -> bool {
+    let matches = slash_matches(&s.composer.text, &lock(&s.core));
+    if matches.is_empty() {
+        return false;
     }
-    let names = APP_COMMANDS
-        .iter()
-        .map(|(n, _)| (*n).to_owned())
-        .chain(core.commands.iter().map(|c| c.name.clone()));
-    names
-        .filter(|n| n.starts_with(prefix))
-        .min_by_key(String::len)
-        .map(|n| format!("/{n} "))
+    let count = matches.len();
+    let index = s.slash_index().min(count - 1);
+    let step = match key {
+        Key::Up => count - 1,
+        Key::Down => 1,
+        _ => {
+            let (name, _) = &matches[index];
+            if matches!(key, Key::Enter) && s.composer.text == format!("/{name}") {
+                return false;
+            }
+            s.composer.replace_text(format!("/{name} "));
+            return true;
+        }
+    };
+    s.slash_pick = (s.composer.text.clone(), (index + step) % count);
+    true
 }
 
 fn slash_matches(input: &str, core: &Core) -> Vec<(String, String)> {
@@ -383,20 +397,26 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
 /// One footer height for every state, so a hint or a Stop button never moves the transcript.
 const FOOTER_H: f32 = 24.0;
 
-fn slash_list(input: &str, core: &Core, k: &Kit) -> Option<El> {
+fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<El> {
     let c = &k.c;
     let matches = slash_matches(input, core);
     if matches.is_empty() {
         return None;
     }
+    let highlighted = highlighted.min(matches.len() - 1);
     let mut list = col().gap(2.0).padding(6.0);
-    for (name, description) in matches {
+    for (index, (name, description)) in matches.into_iter().enumerate() {
+        let mut item = row()
+            .center_y()
+            .gap(10.0)
+            .px(8.0)
+            .py(4.0)
+            .radius(k.radius.sm);
+        if index == highlighted {
+            item = item.fill(c.hover);
+        }
         list = list.child(
-            row()
-                .gap(10.0)
-                .px(8.0)
-                .py(4.0)
-                .child(text(format!("/{name}")).font(k.ty.mono).color(c.text_base))
+            item.child(text(format!("/{name}")).font(k.ty.mono).color(c.text_base))
                 .child(
                     text(description)
                         .font(k.ty.small)
@@ -406,14 +426,12 @@ fn slash_list(input: &str, core: &Core, k: &Kit) -> Option<El> {
                 ),
         );
     }
-    let list = list.child(
-        text("tab completes")
-            .font(k.ty.small)
-            .color(c.text_muted)
-            .px(8.0)
-            .py(2.0),
-    );
-    Some(popover::raised(k, list, k.radius.md).key("slash").w_full())
+    Some(
+        popover::raised(k, list, k.radius.md)
+            .key("slash")
+            .w_full()
+            .transition(Transition::none()),
+    )
 }
 
 fn composer_footer(core: &Core, hint: &str, k: &Kit) -> El {
@@ -487,7 +505,7 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
         .child(field)
         .child(composer_footer(core, hint, k));
     let mut column = col().w_full().gap(8.0);
-    if let Some(list) = slash_list(&s.composer.text, core, k) {
+    if let Some(list) = slash_list(&s.composer.text, s.slash_index(), core, k) {
         column = column.child(list);
     }
     column.child(frame)

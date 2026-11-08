@@ -1,6 +1,6 @@
 //! Scenes for headless snapshots (`--snap x.png --scene fanout`): fixed transcripts, no pi process.
 
-use crate::core::{Core, Dialog, DialogKind, Shared, lock};
+use crate::core::{Command, Core, Dialog, DialogKind, Shared, lock};
 use crate::sessions::Summary;
 use crate::transcript::{Block, Deal, Done, END_TITLE, FanAnswer, Item, ToolRun, Transcript};
 
@@ -70,6 +70,22 @@ pub fn scene_chat(shared: &Shared) {
     let mut core = lock(shared);
     chat(&mut core);
     sidebar(&mut core);
+}
+
+/// The chat with `/` typed: the slash list over the composer, pi's commands after the app's.
+pub fn scene_slash(shared: &Shared) {
+    scene_chat(shared);
+    let mut core = lock(shared);
+    core.commands = [(
+        "fast",
+        "Toggle OpenAI priority tier (increased usage/cost): /fast [on|off|status]",
+    )]
+    .into_iter()
+    .map(|(name, description)| Command {
+        name: name.into(),
+        description: description.into(),
+    })
+    .collect();
 }
 
 pub fn scene_end(shared: &Shared) {

@@ -13,7 +13,7 @@ pub fn home() -> PathBuf {
 }
 
 pub fn week_dir() -> PathBuf {
-    home().join(".pi/agent/agent-week")
+    home().join(".pi/agent/whodunit")
 }
 
 pub fn sessions_root() -> PathBuf {
@@ -75,7 +75,7 @@ pub struct LoginEnv {
 pub fn login_env() -> &'static LoginEnv {
     static ENV: std::sync::OnceLock<LoginEnv> = std::sync::OnceLock::new();
     ENV.get_or_init(|| {
-        const MARK: &str = "__agent_week_env__";
+        const MARK: &str = "__whodunit_env__";
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_owned());
         let script = format!("command -v pi; print -rn -- {MARK}; env -0");
         let output = Command::new(&shell)

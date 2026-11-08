@@ -1,7 +1,7 @@
-//! Agent Week: a desktop frontend for pi's agent week (see PROPOSAL.md).
+//! Whodunit: a desktop frontend for the whodunit pi extension (see README.md).
 //!
-//! `agent-week` opens the chat window and puts its icon in the menu bar while it runs;
-//! `agent-week -- --cwd <dir>` runs pi in that folder; `agent-week -- --scoreboard` prints the
+//! `whodunit` opens the chat window and puts its icon in the menu bar while it runs;
+//! `whodunit -- --cwd <dir>` runs pi in that folder; `whodunit -- --scoreboard` prints the
 //! scoreboard as Markdown and exits. Headless: `--snap out.png --scene fanout`.
 
 use std::path::PathBuf;
@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use rune::{App, AppSpec, Chrome, WindowSpec};
 
-use agent_week::config::{self, AppConfig};
-use agent_week::core::{Core, Shared, lock};
-use agent_week::ui::full::{self, FullUi};
-use agent_week::{fixtures, menu_bar, scoreboard};
+use whodunit::config::{self, AppConfig};
+use whodunit::core::{Core, Shared, lock};
+use whodunit::ui::full::{self, FullUi};
+use whodunit::{fixtures, menu_bar, scoreboard};
 
 const HEADLESS_FLAGS: [&str; 6] = [
     "--snap",
@@ -51,7 +51,7 @@ fn main() {
     if !headless {
         lock(&shared).refresh_sessions();
         let shared = shared.clone();
-        std::thread::spawn(move || agent_week::core::start_pi(&shared, None));
+        std::thread::spawn(move || whodunit::core::start_pi(&shared, None));
     }
 
     let full_spec = AppSpec {
@@ -78,7 +78,7 @@ fn main() {
         ],
         min_size: Some((720.0, 480.0)),
         ..AppSpec::new(
-            "Agent Week",
+            "Whodunit",
             (1180.0, 780.0),
             || unreachable!("state comes from App::init"),
             full::view,

@@ -5,11 +5,11 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-pub const DEAL: &str = "agent-week.deal";
-pub const DONE: &str = "agent-week.done";
-pub const SWITCH: &str = "agent-week.switch";
-pub const FANOUT_VIEW: &str = "agent-week.fanout-view";
-pub const FANOUT_PICK: &str = "agent-week.fanout-pick";
+pub const DEAL: &str = "whodunit.deal";
+pub const DONE: &str = "whodunit.done";
+pub const SWITCH: &str = "whodunit.switch";
+pub const FANOUT_VIEW: &str = "whodunit.fanout-view";
+pub const FANOUT_PICK: &str = "whodunit.fanout-pick";
 
 #[derive(Clone, Debug)]
 pub enum Block {
@@ -84,7 +84,7 @@ impl Week {
         self.deal.is_some() && self.done.is_none()
     }
 
-    /// Applies one `agent-week.*` custom entry; false for any other entry type.
+    /// Applies one `whodunit.*` custom entry; false for any other entry type.
     pub fn apply_custom(&mut self, custom_type: &str, data: &Value) -> bool {
         match custom_type {
             DEAL => {

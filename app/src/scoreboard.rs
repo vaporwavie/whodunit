@@ -396,7 +396,7 @@ fn fmt(value: Option<f64>, digits: usize, suffix: &str) -> String {
 }
 
 pub fn markdown(board: &Board) -> String {
-    let mut out = format!("# Agent week scoreboard\n\n{} runs logged.\n", board.runs);
+    let mut out = format!("# Whodunit scoreboard\n\n{} runs logged.\n", board.runs);
     for table in &board.tables {
         let ranked_by = if table.fanout {
             "fan-out win share"

@@ -1,4 +1,4 @@
-//! The menu bar icon that shows Agent Week is running, with Open and Quit under it.
+//! The menu bar icon that shows Whodunit is running, with Open and Quit under it.
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -61,7 +61,7 @@ mod mac {
         // SAFETY: AppKit calls on the main thread. The status item, its menu and the Open target
         // are retained and never released, since AppKit holds menu targets weakly.
         unsafe {
-            let Some(mut builder) = ClassBuilder::new("AgentWeekMenuBarTarget", NSObject::class())
+            let Some(mut builder) = ClassBuilder::new("WhodunitMenuBarTarget", NSObject::class())
             else {
                 return;
             };
@@ -83,14 +83,14 @@ mod mac {
             let _: () = msg_send![image, setTemplate: true];
             let button: *mut AnyObject = msg_send![item, button];
             let _: () = msg_send![button, setImage: image];
-            let _: () = msg_send![button, setToolTip: ns_string("Agent Week")];
+            let _: () = msg_send![button, setToolTip: ns_string("Whodunit")];
 
             let menu: *mut AnyObject = msg_send![class!(NSMenu), new];
             let _: () =
-                msg_send![menu, addItem: menu_item("Open Agent Week", sel!(open:), "", target)];
+                msg_send![menu, addItem: menu_item("Open Whodunit", sel!(open:), "", target)];
             let separator: *mut AnyObject = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: separator];
-            let _: () = msg_send![menu, addItem: menu_item("Quit Agent Week", sel!(terminate:), "q", std::ptr::null_mut())];
+            let _: () = msg_send![menu, addItem: menu_item("Quit Whodunit", sel!(terminate:), "q", std::ptr::null_mut())];
             let _: () = msg_send![item, setMenu: menu];
         }
     }

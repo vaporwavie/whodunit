@@ -840,7 +840,7 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>) {
             bin: &spec_bin,
             env: &login.vars,
             cwd: &cwd,
-            args: &["--model", "agent-week/auto"],
+            args: &["--model", "whodunit/auto"],
         },
         move |record| {
             let wakers = {

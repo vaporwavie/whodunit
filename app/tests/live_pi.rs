@@ -1,4 +1,4 @@
-//! End to end against the real pi and the installed agent-week extension. Each test spends a few
+//! End to end against the real pi and the installed whodunit extension. Each test spends a few
 //! cents of API usage, then removes its lines from runs.jsonl and its session files and restores
 //! decks.json, so the week's data stays clean.
 //! Run with `cargo test --release --test live_pi -- --ignored --nocapture --test-threads 1`.
@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use agent_week::config::{self, AppConfig};
-use agent_week::core::{Core, DialogKind, Leave, Shared, lock, start_pi};
-use agent_week::transcript::{Block, Item};
-use agent_week::ui::full::dialog_keys;
 use rune::{Key, KeyEvent, Mods};
+use whodunit::config::{self, AppConfig};
+use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_pi};
+use whodunit::transcript::{Block, Item};
+use whodunit::ui::full::dialog_keys;
 
 fn wait_for(shared: &Shared, what: &str, seconds: u64, mut done: impl FnMut(&mut Core) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(seconds);

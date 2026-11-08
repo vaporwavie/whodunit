@@ -1,11 +1,11 @@
 [package]
-name = "agent-week"
+name = "whodunit"
 version = "0.1.0"
 edition = "2024"
-description = "Desktop frontend for pi's agent week: one harness, a dealt agent per role, rated before the reveal."
+description = "Desktop frontend for whodunit: pi deals a hidden model per role, and you rate the run before the reveal."
 
 [[bin]]
-name = "agent-week"
+name = "whodunit"
 path = "src/main.rs"
 
 [dependencies]
@@ -27,7 +27,7 @@ incremental = true
 opt-level = 2
 debug = false
 
-# Local rune checkout (branch agent-week) until its changes land upstream.
+# Local rune checkout (branch whodunit) until its changes land upstream.
 [patch."https://github.com/anomalyco/rune"]
 rune = { path = "../../rune/crates/rune" }
 rune-kit = { path = "../../rune/crates/rune-kit" }

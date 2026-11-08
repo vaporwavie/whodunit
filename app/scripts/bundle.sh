@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds Agent Week and installs it in ~/Applications: a chat window and a menu bar icon while it runs.
+# Builds Whodunit and installs it in ~/Applications: a chat window and a menu bar icon while it runs.
 set -euo pipefail
 cd "${0:A:h}/.."
 cargo build --release
@@ -22,7 +22,7 @@ bundle() {
   local app="$HOME/Applications/$name.app"
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp target/release/agent-week "$app/Contents/MacOS/agent-week"
+  cp target/release/whodunit "$app/Contents/MacOS/whodunit"
   icns assets/icons/full.png "$app/Contents/Resources/AppIcon.icns"
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,7 +30,7 @@ bundle() {
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>$name</string>
   <key>CFBundleIdentifier</key><string>$id</string>
-  <key>CFBundleExecutable</key><string>agent-week</string>
+  <key>CFBundleExecutable</key><string>whodunit</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -41,4 +41,4 @@ PLIST
   echo "$app"
 }
 
-bundle "Agent Week" technology.erfolg.agent-week
+bundle "Whodunit" io.github.vaporwavie.whodunit

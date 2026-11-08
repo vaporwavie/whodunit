@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const HOME = homedir();
-const DIR = join(HOME, ".pi", "agent", "agent-week");
+const DIR = join(HOME, ".pi", "agent", "whodunit");
 const ROLES_PATH = join(DIR, "roles.json");
 const RUNS_PATH = join(DIR, "runs.jsonl");
 const MODELS_STORE = join(HOME, ".pi", "agent", "models-store.json");
@@ -74,10 +74,10 @@ function turnTiming(events) {
 function piRun(sessionFile, fanout) {
 	const entries = readJsonl(sessionFile);
 	const custom = (type) => entries.filter((entry) => entry.type === "custom" && entry.customType === type).map((entry) => entry.data);
-	const [deal] = custom("agent-week.deal");
+	const [deal] = custom("whodunit.deal");
 	if (!deal) return undefined;
-	const [done] = custom("agent-week.done");
-	const switched = custom("agent-week.switch").length > 0;
+	const [done] = custom("whodunit.done");
+	const switched = custom("whodunit.switch").length > 0;
 	const events = [];
 	let costUsd = 0;
 	let userPrompts = 0;
@@ -87,7 +87,7 @@ function piRun(sessionFile, fanout) {
 		if (entry.type === "message" && isUserPrompt(entry.message)) {
 			userPrompts += 1;
 			events.push({ kind: "prompt", at });
-		} else if (entry.type === "custom_message" && entry.customType === "agent-week.fanout-pick") {
+		} else if (entry.type === "custom_message" && entry.customType === "whodunit.fanout-pick") {
 			events.push({ kind: "prompt", at });
 			events.push({ kind: "agent", at });
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
@@ -259,7 +259,7 @@ function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const config = JSON.parse(readFileSync(ROLES_PATH, "utf8"));
 	const { runs, fanoutRecords } = collectPiRuns(args);
-	const out = ["# Agent week scoreboard", ""];
+	const out = ["# Whodunit scoreboard", ""];
 	const window = [args.since && `from ${args.since.toISOString().slice(0, 10)}`, args.until && `until ${args.until.toISOString().slice(0, 10)}`].filter(Boolean).join(" ");
 	out.push(`${runs.length} runs${window ? ` ${window}` : ""}. Rows with fewer than ${TOO_FEW} rated runs (fan-outs for scout and scribe) are *too few* and can't win. No significance claims.`, "");
 	for (const [roleName, role] of Object.entries(config.roles)) {

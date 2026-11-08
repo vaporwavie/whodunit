@@ -1,4 +1,4 @@
-//! Agent Week's app logic: the pi RPC client, the transcript model, the scoreboard and the views.
+//! Whodunit's app logic: the pi RPC client, the transcript model, the scoreboard and the views.
 
 pub mod config;
 pub mod core;

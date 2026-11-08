@@ -6,17 +6,17 @@ import type { Message } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const PROVIDER = "agent-week";
+const PROVIDER = "whodunit";
 const MODEL_ID = "auto";
-const DIR = join(homedir(), ".pi", "agent", "agent-week");
+const DIR = join(homedir(), ".pi", "agent", "whodunit");
 const ROLES_PATH = join(DIR, "roles.json");
 const DECKS_PATH = join(DIR, "decks.json");
 const RUNS_PATH = join(DIR, "runs.jsonl");
-const DEAL = "agent-week.deal";
-const DONE = "agent-week.done";
-const SWITCH = "agent-week.switch";
-const FANOUT_VIEW = "agent-week.fanout-view";
-const FANOUT_PICK = "agent-week.fanout-pick";
+const DEAL = "whodunit.deal";
+const DONE = "whodunit.done";
+const SWITCH = "whodunit.switch";
+const FANOUT_VIEW = "whodunit.fanout-view";
+const FANOUT_PICK = "whodunit.fanout-pick";
 const FANOUT_TIMEOUT_MS = 20 * 60 * 1000;
 const FANOUT_TOOLS = "read,grep,find,ls,mcp__exa__*";
 const LABELS = ["A", "B", "C", "D"];
@@ -110,7 +110,7 @@ function findEntry<T>(ctx: ExtensionContext, customType: string): T | undefined 
 	return entry.data as T;
 }
 
-function isAgentWeek(model: { provider: string; id: string } | undefined): boolean {
+function isWhodunit(model: { provider: string; id: string } | undefined): boolean {
 	return model?.provider === PROVIDER && model.id === MODEL_ID;
 }
 
@@ -192,7 +192,7 @@ function runChild(
 			`${agent}:${effort}`,
 			prompt,
 		];
-		const child = spawn("pi", args, { cwd, env: { ...process.env, AGENT_WEEK_CHILD: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("pi", args, { cwd, env: { ...process.env, WHODUNIT_CHILD: "1" }, stdio: ["ignore", "pipe", "pipe"] });
 		children.add(child);
 		let buffer = "";
 		let text = "";
@@ -330,7 +330,7 @@ function setFooter(ctx: ExtensionContext, label: () => string): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	if (process.env.AGENT_WEEK_CHILD) return;
+	if (process.env.WHODUNIT_CHILD) return;
 
 	const children = new Set<ChildProcess>();
 	let forcedRole: string | undefined;
@@ -338,9 +338,9 @@ export default function (pi: ExtensionAPI) {
 	const footerLabel = (ctx: ExtensionContext) => () => {
 		const deal = findEntry<Deal>(ctx, DEAL);
 		const done = findEntry<{ outcome: string }>(ctx, DONE);
-		if (!deal) return forcedRole ? `agent-week · ${forcedRole} (forced) · waiting for first prompt` : "agent-week · waiting for first prompt";
+		if (!deal) return forcedRole ? `whodunit · ${forcedRole} (forced) · waiting for first prompt` : "whodunit · waiting for first prompt";
 		const suffix = done ? " · rated" : " · /done when finished";
-		return `agent-week · ${deal.role} · ${deal.size}${suffix}`;
+		return `whodunit · ${deal.role} · ${deal.size}${suffix}`;
 	};
 
 	const recordDeal = (ctx: ExtensionContext, deal: Deal) => {
@@ -376,7 +376,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerVirtualModel({
 		provider: PROVIDER,
 		id: MODEL_ID,
-		name: "Agent week",
+		name: "Whodunit",
 		thinkingLevels: ["medium"],
 		contextWindow: 272_000,
 		maxTokens: 128_000,
@@ -392,14 +392,14 @@ export default function (pi: ExtensionAPI) {
 			const effort = deal?.effort ?? "medium";
 			const { provider, id } = splitAgent(agent);
 			const model = ctx.modelRegistry.find(provider, id);
-			if (!model) throw new Error(`agent-week: ${agent} is not in the catalog`);
+			if (!model) throw new Error(`whodunit: ${agent} is not in the catalog`);
 			return { model, thinkingLevel: effort };
 		},
 	});
 
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
-		if (!isAgentWeek(ctx.model)) return { action: "continue" };
+		if (!isWhodunit(ctx.model)) return { action: "continue" };
 		if (findEntry<Deal>(ctx, DEAL)) return { action: "continue" };
 
 		const config = loadConfig();
@@ -419,13 +419,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		forcedRole = undefined;
-		if (!isAgentWeek(ctx.model)) return;
+		if (!isWhodunit(ctx.model)) return;
 		setFooter(ctx, footerLabel(ctx));
 		if (!process.env.EXA_API_KEY && ctx.hasUI) ctx.ui.notify("EXA_API_KEY isn't set, so scout fan-outs run without web search.", "warning");
 	});
 
 	pi.on("model_select", async (event, ctx) => {
-		if (isAgentWeek(event.model)) {
+		if (isWhodunit(event.model)) {
 			setFooter(ctx, footerLabel(ctx));
 			return;
 		}
@@ -497,7 +497,7 @@ export default function (pi: ExtensionAPI) {
 			const config = loadConfig();
 			const deal = findEntry<Deal>(ctx, DEAL);
 			if (!deal) {
-				ctx.ui.notify("No agent-week run in this session yet.", "warning");
+				ctx.ui.notify("No whodunit run in this session yet.", "warning");
 				return;
 			}
 			const previous = findEntry<{ outcome: string; score: number }>(ctx, DONE);

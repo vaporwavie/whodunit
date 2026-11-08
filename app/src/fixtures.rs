@@ -36,7 +36,7 @@ fn sidebar(core: &mut Core) {
         },
     ];
     core.session_file = Some("/fixture/a.jsonl".into());
-    core.cwd = crate::config::home().join("Workspace/agentic-week");
+    core.cwd = crate::config::home().join("Workspace/whodunit");
 }
 
 fn chat(core: &mut Core) {

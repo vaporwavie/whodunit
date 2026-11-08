@@ -1,0 +1,40 @@
+{
+  "frozen": "2026-11-09 to 2026-11-13",
+  "classifier": { "provider": "typesafe", "model": "jev-latest", "minConfidence": 0.6 },
+  "agents": {
+    "anthropic/claude-opus-5-5": "Opus 5.5",
+    "openai/gpt-6.1-sol": "GPT-6.1 Sol",
+    "openai/gpt-6-astra": "GPT-6 Astra",
+    "google/gemini-4-argon": "Gemini 4 Argon",
+    "fireworks/accounts/fireworks/models/kimi-k3p1-pro": "Kimi K3.1 Pro"
+  },
+  "roles": {
+    "errand-boy": {
+      "effort": "medium",
+      "criteria": "A chore under about 15 minutes: scaffolding, renames, shell or file work, brute-force repetition",
+      "contenders": ["anthropic/claude-opus-5-5", "openai/gpt-6.1-sol", "fireworks/accounts/fireworks/models/kimi-k3p1-pro", "google/gemini-4-argon"]
+    },
+    "builder": {
+      "effort": "high",
+      "criteria": "The goal is clear and the job is writing code in a repo",
+      "contenders": ["anthropic/claude-opus-5-5", "openai/gpt-6.1-sol"]
+    },
+    "brainiac": {
+      "effort": "xhigh",
+      "criteria": "There is no clear path yet: diagnosing, designing architecture, debugging something nasty, planning",
+      "contenders": ["anthropic/claude-opus-5-5", "openai/gpt-6-astra"]
+    },
+    "scout": {
+      "effort": "high",
+      "fanout": true,
+      "criteria": "Research or comparison that needs the web",
+      "contenders": ["anthropic/claude-opus-5-5", "openai/gpt-6-astra", "fireworks/accounts/fireworks/models/kimi-k3p1-pro"]
+    },
+    "scribe": {
+      "effort": "high",
+      "fanout": true,
+      "criteria": "Prose: posts, docs, messages, copy",
+      "contenders": ["anthropic/claude-opus-5-5", "openai/gpt-6-astra", "google/gemini-4-argon"]
+    }
+  }
+}

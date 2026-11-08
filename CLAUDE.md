@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-whodunit: blind trials for coding agents in the pi harness. An extension deals a hidden model per role, and the user ends each run with a score before the role and model are revealed. `README.md` is the spec (session flow, house rules, scoring); read it before changing behavior.
+whodunit: blind trials for coding agents in the pi harness. An extension deals a hidden model per role, and the user ends each run with a score before the role and model are revealed. `README.md` is the spec (session flow, house rules, scoring) and `app/README.md` covers the app (keys, score card, open-run guard); read them before changing behavior.
 
 Four pieces live here; data lives under `~/.pi/agent/whodunit/`:
 
@@ -48,4 +48,4 @@ There are no unit tests; `tests/live_pi.rs` is the only suite. Each test removes
 - **Session files** (`src/sessions.rs`): pi stores sessions under `~/.pi/agent/sessions/--<cwd with / \ : as ->--/` (`config::session_dir`). pi writes a file only after the first assistant message, so a fan-out session that hasn't been followed up is listed from memory.
 - **Scoreboard exists twice**: `src/scoreboard.rs` (the app's page and `--scoreboard`) and `scoreboard/scoreboard.mjs`. Both join `runs.jsonl` with session-file metrics and add a Claude Code reference row from the last 30 days of `~/.claude/projects`. Both also show who decided each role (Jev, picker, `/role`, fallback) from the deal's `source`. Ranking rules (mean score vs fan-out win share, `TOO_FEW = 3`, 10-minute idle cap) come from `README.md`; a change to one implementation needs the same change in the other.
 - **Environment**: a Finder-launched app gets launchd's bare env, so `config::login_env()` runs the login shell once (`$SHELL -lic`) to find `pi` and the API keys. These are kept in memory only, never written to disk.
-- **Fixtures** (`src/fixtures.rs`) build fixed transcripts for the headless scenes (`chat`, `end`, `reveal`, `fanout`, `run`, `guard`, `long`, `busy`, `growing`, `board`). The README screenshots in `docs/` are the `run`, `end` and `fanout` scenes at `--scale 2`. Add a scene there and register it in `main.rs` when adding UI states.
+- **Fixtures** (`src/fixtures.rs`) build fixed transcripts for the headless scenes (`chat`, `end`, `reveal`, `fanout`, `run`, `guard`, `long`, `busy`, `growing`, `board`). The screenshots in `docs/` (used by both READMEs) are the `run`, `end` and `fanout` scenes at `--scale 2`. Add a scene there and register it in `main.rs` when adding UI states.

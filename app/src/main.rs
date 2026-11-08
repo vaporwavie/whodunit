@@ -1,4 +1,4 @@
-//! Whodunit: a desktop frontend for the whodunit pi extension (see README.md).
+//! Whodunit: a desktop frontend for the whodunit pi extension (see app/README.md).
 //!
 //! `whodunit` opens the chat window and puts its icon in the menu bar while it runs;
 //! `whodunit -- --cwd <dir>` runs pi in that folder; `whodunit -- --scoreboard` prints the

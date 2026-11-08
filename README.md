@@ -24,11 +24,11 @@ This app uses [pi](https://github.com/earendil-works/pi) as the main harness and
 1. You send the first prompt of a new pi session.
 2. [Jev](#the-classifier) reads it and picks a **role** (and a size: S, M or L). When it's less than 60% sure, you pick the role yourself with one key.
 3. The extension deals the next model from that role's shuffled **deck**, so every contender gets an even share of runs and you can't predict the next one. The session sticks to that model.
-4. While you work, pi's footer and the app show neither the role nor the model, only that `/done` ends the run.
-5. **End the run** with `/done` (⌘D or the **End run** button in the app). It's the "end it all" button for the session:
-   - One card, one score. Press a key from 5 to 1, then ⏎:
+4. While you work, pi's footer shows neither the role nor the model, only that `/done` ends the run.
+5. **End the run** with `/done`. It's the "end it all" button for the session:
+   - One card, one score, from 5 to 1:
 
-     | Key | Means | Logged as |
+     | Score | Means | Logged as |
      |---|---|---|
      | 5 | nailed it, great | nailed it |
      | 4 | nailed it, rough edges | nailed it |
@@ -36,18 +36,13 @@ This app uses [pi](https://github.com/earendil-works/pi) as the main harness and
      | 2 | needed big fixes | needed my fixes |
      | 1 | failed | failed |
 
-   - The digit only highlights a row. ⏎ commits, because ending can't be undone. Esc goes back to working.
-   - The session is then **sealed**: no more prompts, ⌘N (or `/new`) starts the next task.
+   - Cancelling the card goes back to working.
+   - The session is then **sealed**: no more prompts, `/new` starts the next task.
    - Only now do you see the role, the size and the model, and the run lands in `runs.jsonl`.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/end-dark.png">
-  <img alt="Ending a run: five scores on one card, 4 highlighted, End run waits for Enter" src="docs/end-light.png">
-</picture>
 
 Roles marked `fanout` (short one-shot jobs like research or prose) run every contender in parallel instead. You see their answers as A, B, C, pick the best, and the winner continues the session. The role stays hidden there too.
 
-<img alt="A fan-out: three anonymous answers, picked by key" src="docs/fanout-light.png">
+The app's keys, score card and fan-out picker are in [`app/README.md`](app/README.md).
 
 ## The classifier
 
@@ -80,7 +75,7 @@ Model IDs: `anthropic/claude-opus-5-5`, `openai/gpt-6.1-sol`, `openai/gpt-6-astr
 | Path | What it is |
 |---|---|
 | `extension/` | The pi extension: virtual model `whodunit/auto`, classifier, decks, fan-out, `/done` and `/role` |
-| `app/` | A macOS desktop frontend in Rust (built on [rune](https://github.com/anomalyco/rune)). It drives pi over RPC and adds a sidebar of sessions, a rating guard and a scoreboard page |
+| `app/` | An optional macOS desktop frontend in Rust, see [`app/README.md`](app/README.md) |
 | `scoreboard/` | A standalone Node scoreboard that prints Markdown |
 | `laws/` | The rules in [Bend2](https://github.com/bendlang/bend), with proofs, plus a check that the extension still follows them |
 
@@ -106,18 +101,13 @@ Edit `roles.json` to fit your accounts. `agents` maps pi model IDs (`provider/id
 
 **3. Keys.** The classifier in the example config is TypeSafe's Jev (`TYPESAFE_API_KEY`). Fan-out web search uses Exa's hosted MCP (`EXA_API_KEY`); without it, fan-outs run with no web search. Contenders use whatever sign-in pi already has for their providers.
 
-**4. Optional: the app.** It needs macOS and Rust (the version is pinned in `app/rust-toolchain.toml`).
-
-```sh
-cd app
-scripts/bundle.sh    # installs ~/Applications/Whodunit.app
-```
+**4. Optional: the app.** See [`app/README.md`](app/README.md#install).
 
 ## Using it
 
 - One task per session: `/new` between tasks.
 - `/role <name>` forces a role before the first prompt. Once a run is dealt, `/role` only tells you the role after `/done`.
-- `/done` (⌘D) on every run. Leaving an open run asks you to end it first.
+- `/done` on every run. A run left open shows on the scoreboard as unrated.
 - Switching models by hand with `/model` ends nothing, but `/done` then logs the run as 1, *failed*, for the dealt agent, without asking.
 - Don't open `/session` before `/done`, because it names the model.
 
@@ -129,7 +119,7 @@ node scoreboard/scoreboard.mjs --since 2026-11-09 [--until 2026-11-14] [--no-ref
 
 You get one table per role: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Above the tables, and under each role, a line shows who decided the role: Jev, the picker, `/role` or the fallback. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
 
-There's also a reference row computed from your last 30 days of Claude Code transcripts (`~/.claude/projects`). Pass `--no-reference` to leave it out. The app shows the same board on its Scoreboard page, or prints it with `whodunit -- --scoreboard`.
+There's also a reference row computed from your last 30 days of Claude Code transcripts (`~/.claude/projects`). Pass `--no-reference` to leave it out. The app has the same board on its Scoreboard page.
 
 ## Laws
 

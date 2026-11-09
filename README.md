@@ -5,8 +5,8 @@
 > — Captain Raymond Holt
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/run-dark.png">
-  <img alt="A run in the Whodunit app: neither the role nor the model is shown until the run ends" src="docs/run-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/waves-dark.gif">
+  <img alt="Whodunit's empty chat: dithered waves washing along the shore" src="docs/waves-light.gif">
 </picture>
 
 ## Why

@@ -111,6 +111,9 @@ pub fn working(core: &Core, k: &Kit) -> Option<El> {
 }
 
 const TOOL_TAIL: usize = 8;
+const SHELL_TAIL: usize = 20;
+/// Shaping is the cost, so a tool line is cut to what a wide card can show before it's laid out.
+const TOOL_LINE_MAX: usize = 400;
 /// A diff past this scrolls inside its card: the header and sixteen lines.
 const DIFF_MAX_H: f32 = 44.0 + 16.0 * 20.0;
 /// A thought past twelve lines scrolls inside its block.
@@ -136,6 +139,14 @@ fn markdown(body: String, k: &Kit) -> Markdown {
     Markdown::new(body).style(style).selectable(true)
 }
 
+/// The first `chars` characters of `line`.
+fn first_chars(line: &str, chars: usize) -> &str {
+    match line.char_indices().nth(chars) {
+        Some((end, _)) => &line[..end],
+        None => line,
+    }
+}
+
 /// Drops the indent every line shares, as `git diff --stat` adds one.
 fn dedent(output: &str) -> String {
     let lines: Vec<&str> = output.trim_end().lines().collect();
@@ -150,6 +161,59 @@ fn dedent(output: &str) -> String {
         .map(|line| line.get(indent..).unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The last `keep` lines of monospace output, one clipped row each, after a count of the rest.
+/// With `error`, the last line shows in red and wraps to three lines.
+fn output_tail(output: &str, keep: usize, error: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let all: Vec<&str> = output.trim_end().lines().collect();
+    let hidden = all.len().saturating_sub(keep);
+    let shown = dedent(&all[hidden..].join("\n"));
+    let lines: Vec<&str> = shown.lines().collect();
+    let mut tail = col().w_full().gap(6.0);
+    if hidden > 0 {
+        tail = tail.child(
+            text(format!(
+                "… {hidden} earlier {}",
+                if hidden == 1 { "line" } else { "lines" }
+            ))
+            .font(k.ty.small)
+            .color(c.text_muted),
+        );
+    }
+    let (body, last) = match lines.split_last() {
+        Some((last, body)) if error => (body, Some(*last)),
+        _ => (&lines[..], None),
+    };
+    let mut rows = col().w_full();
+    for line in body {
+        // One row per line, as a terminal tail: minified output is a few lines thousands wide.
+        let line = if line.is_empty() {
+            " "
+        } else {
+            first_chars(line, TOOL_LINE_MAX)
+        };
+        rows = rows.child(
+            text(line.to_owned())
+                .font(k.ty.mono)
+                .color(c.text_muted)
+                .w_full()
+                .truncate()
+                .selectable(true),
+        );
+    }
+    if let Some(last) = last {
+        rows = rows.child(
+            text(first_chars(last, TOOL_LINE_MAX * 3).to_owned())
+                .font(k.ty.mono)
+                .color(c.danger.fg)
+                .max_lines(3)
+                .wrap_anywhere()
+                .selectable(true),
+        );
+    }
+    tail.child(rows)
 }
 
 fn thinking_row(k: &Kit) -> El {
@@ -303,44 +367,7 @@ fn tool_row(core: &Core, id: &str, name: &str, args: &str, k: &Kit) -> El {
         );
     let mut card = mono_frame(k).child(head);
     if let Some(run) = run.filter(|r| !r.output.trim().is_empty()) {
-        let output = dedent(&run.output);
-        let lines: Vec<&str> = output.lines().collect();
-        let hidden = lines.len().saturating_sub(TOOL_TAIL);
-        if hidden > 0 {
-            card = card.child(
-                text(format!(
-                    "… {hidden} earlier {}",
-                    if hidden == 1 { "line" } else { "lines" }
-                ))
-                .font(k.ty.small)
-                .color(c.text_muted),
-            );
-        }
-        let shown = &lines[hidden..];
-        let (body, last) = match shown.split_last() {
-            Some((last, body)) if run.is_error => (body, Some(*last)),
-            _ => (shown, None),
-        };
-        let mut output = col().w_full();
-        if !body.is_empty() {
-            output = output.child(
-                text(body.join("\n"))
-                    .font(k.ty.mono)
-                    .color(c.text_muted)
-                    .wrap()
-                    .selectable(true),
-            );
-        }
-        if let Some(last) = last {
-            output = output.child(
-                text(last.to_owned())
-                    .font(k.ty.mono)
-                    .color(c.danger.fg)
-                    .wrap()
-                    .selectable(true),
-            );
-        }
-        card = card.child(output);
+        card = card.child(output_tail(&run.output, TOOL_TAIL, run.is_error, k));
     }
     card
 }
@@ -535,13 +562,7 @@ fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) ->
                         .child(spacer())
                         .child(text(status).font(k.ty.small).color(c.text_muted)),
                 )
-                .child(
-                    text(dedent(output))
-                        .font(k.ty.mono)
-                        .color(c.text_muted)
-                        .wrap()
-                        .selectable(true),
-                )
+                .child(output_tail(output, SHELL_TAIL, false, k))
         }
         Item::Fanout {
             prompt,

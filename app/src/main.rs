@@ -77,6 +77,7 @@ fn main() {
             ("run", |s: &mut FullUi| fixtures::scene_run(&s.core)),
             ("tasks", |s: &mut FullUi| fixtures::scene_tasks(&s.core)),
             ("long", |s: &mut FullUi| fixtures::scene_long(&s.core)),
+            ("wide", |s: &mut FullUi| fixtures::scene_wide(&s.core)),
             ("busy", |s: &mut FullUi| fixtures::scene_busy(&s.core)),
             ("slash", |s: &mut FullUi| {
                 fixtures::scene_slash(&s.core);

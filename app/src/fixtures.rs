@@ -286,6 +286,46 @@ pub fn scene_run(shared: &Shared) {
     core.sessions[2].title = "Port the scoreboard to Node".into();
 }
 
+/// Tool output too wide for its card: minified bundle lines, a long error and a `!cmd` path.
+pub fn scene_wide(shared: &Shared) {
+    let mut core = lock(shared);
+    chat(&mut core);
+    sidebar(&mut core);
+    let minified = "this.editor.setText(combinedText),this.updatePendingMessagesDisplay(),options?.abort&&this.session.abort(),allQueued.forEach(m=>this.session.followUp(m.text)),queueCompactionMessage(text,mode){this.compactionQueuedMessages.push({text,mode}),this.editor.addToHistory?.(text)}";
+    let grep = (0..12)
+        .map(|n| format!("/home/me/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-44DLKSKE.js:{}:{minified}", 1000 + n))
+        .collect::<Vec<_>>()
+        .join("\n");
+    core.t
+        .items
+        .push(Item::User("Where does pi keep its cache settings?".into()));
+    core.t.items.push(Item::Assistant {
+        blocks: vec![
+            tool("w1", "bash", "rg -n 'cache|compact' ~/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks"),
+            tool("w2", "bash", "node -e 'require(\"./settings.json\")'"),
+        ],
+        streaming: false,
+        error: None,
+    });
+    ran(&mut core, "w1", &grep, false, false);
+    ran(
+        &mut core,
+        "w2",
+        &format!(
+            "node:internal/modules/cjs/loader:1228\n  throw err;\n  ^\n\nError: Cannot find module './settings.json' {}",
+            minified.repeat(3)
+        ),
+        true,
+        false,
+    );
+    core.t.items.push(Item::Bash {
+        command: "ls -d ~/.local/share/fnm/node-versions/*/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks".into(),
+        output: (0..300).map(|n| format!("/home/me/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-{n:04}.js:{minified}")).collect::<Vec<_>>().join("\n"),
+        exit_code: Some(0),
+        running: false,
+    });
+}
+
 /// Working, idle and ended chats, without the old score-before-switch guard.
 pub fn scene_tasks(shared: &Shared) {
     scene_run(shared);

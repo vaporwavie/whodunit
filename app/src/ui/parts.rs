@@ -15,6 +15,8 @@ use serde_json::json;
 
 use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item, Shot};
+use crate::ui::dither::Motion;
+use crate::ui::stage::{self, Fanout, Stage};
 
 pub trait HasCore: 'static {
     fn core(&self) -> &Shared;
@@ -29,6 +31,14 @@ pub trait HasCore: 'static {
     }
     /// Opens an image full size, from a click on its tile.
     fn view_shot(&mut self, _shot: Shot) {}
+    /// How the working chat's dot art moves.
+    fn stage_motion(&self) -> Motion {
+        Motion::Live
+    }
+    /// Seconds since a fan-out lane last changed state.
+    fn lane_age(&self, _label: &str) -> f32 {
+        stage::SETTLED
+    }
 }
 
 pub fn with_core<S: HasCore>(s: &S, f: impl FnOnce(&mut Core)) {
@@ -67,8 +77,19 @@ pub fn busy_line(core: &Core) -> Option<String> {
         }
         return Some(text.clone());
     }
-    if let Some(lines) = core.widgets.values().next() {
-        return lines.first().cloned();
+    if let Some(line) = core.widgets.values().next().and_then(|lines| lines.first()) {
+        let Some(fanout) = Fanout::parse(line) else {
+            return Some(line.clone());
+        };
+        let mut status = format!(
+            "Fan-out · {} of {} answered",
+            fanout.answered(),
+            fanout.lanes.len()
+        );
+        if let Some(elapsed) = fanout.elapsed {
+            status = format!("{status} · {elapsed}");
+        }
+        return Some(status);
     }
     if core.pending_prompt.is_some() && core.t.week.deal.is_none() {
         return Some("Classifying and dealing an agent…".to_owned());
@@ -264,23 +285,14 @@ fn output_tail(output: &str, keep: usize, error: bool, k: &Kit) -> El {
     tail.child(rows)
 }
 
-fn thinking_row(k: &Kit) -> El {
-    row()
-        .gap(8.0)
-        .center_y()
-        .child(Spinner::new().size(14.0).build(k))
-        .child(text("Thinking…").font(k.ty.small).color(k.c.text_muted))
-}
-
-/// A finished thought after the reveal: the whole trace, capped so it never walls the answer.
+/// A finished thought after the reveal: the whole trace, capped so it never walls the answer,
+/// down a dotted rail.
 fn thinking_block(body: &str, k: &Kit, key: String) -> El {
     let c = &k.c;
-    col()
-        .key(key)
+    let trace = col()
         .w_full()
         .max_h(THINKING_MAX_H)
-        .pl(12.0)
-        .border_sides([0.0, 0.0, 0.0, 2.0], c.border_weak)
+        .pl(12.0 + stage::RAIL_W)
         .child(
             text(body.trim().to_owned())
                 .font(k.ty.ui)
@@ -291,7 +303,12 @@ fn thinking_block(body: &str, k: &Kit, key: String) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .scroll_edge_fade(16.0)
+        .scroll_edge_fade(16.0);
+    col()
+        .key(key)
+        .w_full()
+        .child(stage::rail(k).pin(Some(0.0), Some(0.0), None, Some(0.0)))
+        .child(trace)
 }
 
 /// Paths in the diff header read from the session's folder.
@@ -491,12 +508,18 @@ fn assistant_view<S: HasCore>(
                     .key(format!("{key}-md{index}"));
                 column = column.child(md);
             }
-            Some(Block::Thinking(body)) if !body.is_empty() => {
-                // The trace's style names the lab, so before the reveal it only shows while it streams.
+            Some(Block::Thinking(body)) => {
+                // The trace's style names the lab, so before the reveal it shows only as dot
+                // art: written while it streams, then sealed at a size that never follows it.
+                let think_key = format!("{key}-think{index}");
                 if core.reveal().is_some() {
-                    column = column.child(thinking_block(body, k, format!("{key}-think{index}")));
+                    if !body.is_empty() {
+                        column = column.child(thinking_block(body, k, think_key));
+                    }
                 } else if streaming && latest == Some(index) {
-                    column = column.child(thinking_row(k));
+                    column = column.child(stage::thinking(s.stage_motion(), k).key(think_key));
+                } else if !body.is_empty() {
+                    column = column.child(stage::sealed(index, k).key(think_key));
                 }
             }
             Some(Block::Tool { id, name, args, .. }) => {
@@ -509,7 +532,7 @@ fn assistant_view<S: HasCore>(
         }
     }
     if streaming && latest.is_none() {
-        column = column.child(thinking_row(k));
+        column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think")));
     }
     if let Some(error) = error {
         let shown = if core.reveal().is_some() {
@@ -679,7 +702,9 @@ fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) ->
 
 /// The transcript as rows of a growth stack: only the rows on screen are built.
 pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
-    let count = core.t.items.len() + usize::from(core.pending_prompt.is_some());
+    let count = core.t.items.len()
+        + usize::from(core.pending_prompt.is_some())
+        + usize::from(Stage::of(core).is_some_and(|stage| stage.shows()));
     let session = session_tag(core);
     col()
         .key("items")
@@ -692,15 +717,17 @@ pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
             |s: &S, i| Cow::Owned(format!("item-{:x}-{i}", session_tag(&lock(s.core())))),
             move |s: &S, i| {
                 let core = lock(s.core());
-                let last = i + 1 == core.t.items.len() + usize::from(core.pending_prompt.is_some());
-                let body = match core.t.items.get(i) {
-                    Some(item) => item_view::<S>(s, &core, item, &format!("item-{i}"), k),
-                    None => core.pending_prompt.as_deref().map_or_else(
-                        || col(),
-                        |prompt| {
-                            user_bubble(s, prompt, &core.pending_shots, k).key("pending-prompt")
-                        },
-                    ),
+                let messages = core.t.items.len() + usize::from(core.pending_prompt.is_some());
+                let stage = Stage::of(&core).filter(Stage::shows);
+                let last = i + 1 == messages + usize::from(stage.is_some());
+                let body = match (core.t.items.get(i), &core.pending_prompt) {
+                    (Some(item), _) => item_view::<S>(s, &core, item, &format!("item-{i}"), k),
+                    (None, Some(prompt)) if i < messages => {
+                        user_bubble(s, prompt, &core.pending_shots, k).key("pending-prompt")
+                    }
+                    _ => stage.map_or_else(col, |stage| {
+                        stage::view(&stage, s.stage_motion(), |label| s.lane_age(label), k)
+                    }),
                 };
                 col()
                     .w_full()

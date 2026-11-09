@@ -8,6 +8,7 @@ use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::{El, Spring, SpringPair, Transition, effect};
 
 use crate::ui::full::FullUi;
+use crate::ui::stage;
 
 const MARK: u32 = 0xd17e;
 /// Dot art reads as motion at this rate, at half the cost of the display's.
@@ -26,7 +27,7 @@ pub enum Motion {
 impl Motion {
     const ALL: [Motion; 3] = [Motion::Live, Motion::Paused, Motion::Still];
 
-    fn of(data: f32) -> Motion {
+    pub(crate) fn of(data: f32) -> Motion {
         let index = (data as usize).min(Motion::ALL.len() - 1);
         Motion::ALL[index]
     }
@@ -188,17 +189,28 @@ fn to_linear(c: vec3f) -> vec3f {
 const IMMEDIATES: usize = 4 * (4 + 5) * 4;
 
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    pipeline_for(device, format, "dither", SHADER, IMMEDIATES)
+}
+
+/// A full-slot triangle with `source`'s `vs` and `fs`, blending premultiplied.
+pub fn pipeline_for(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &str,
+    source: &str,
+    immediates: usize,
+) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("dither"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("dither"),
+        label: Some(label),
         bind_group_layouts: &[],
-        immediate_size: IMMEDIATES as u32,
+        immediate_size: immediates as u32,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("dither"),
+        label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &module,
@@ -255,13 +267,17 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
-/// Draws frames only when asked: `full::poll` paces the motion at `FRAME`.
+/// Draws frames only when asked: `full::poll` paces the motion at `FRAME`. Paints the shore and
+/// the working chat's stage (`stage::MARK`).
 #[derive(Default)]
 pub struct Waves {
     device: Option<DeviceKey>,
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    stage_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The shore's clock: it advances only while live, so a pause resumes where it stopped.
     shore: f32,
+    /// The stage's clock, kept the same way.
+    stage: f32,
     last: Option<f32>,
 }
 
@@ -274,6 +290,7 @@ impl Compositor<FullUi> for Waves {
         let key = f.device_key();
         if self.device != Some(key) {
             self.pipelines.clear();
+            self.stage_pipelines.clear();
             self.device = Some(key);
         }
         let clear = f.rt.clear_color();
@@ -291,10 +308,30 @@ impl Compositor<FullUi> for Waves {
         let last = self.last.unwrap_or(now);
         let shore = self.shore;
         let mut next = shore;
+        let stage = self.stage;
+        let mut stage_next = stage;
         let srgb = f.srgb_blend();
         let device = f.device;
         let pipelines = &mut self.pipelines;
+        let stage_pipelines = &mut self.stage_pipelines;
         f.ui.draw_with(f.encoder, f.target, clear, &mut |pass, site| {
+            if site.mark == stage::MARK {
+                let t = match stage::motion(site) {
+                    Motion::Live => {
+                        stage_next = stage + (now - last);
+                        stage_next
+                    }
+                    Motion::Paused => stage,
+                    Motion::Still => stage::REST,
+                };
+                let pipeline = stage_pipelines
+                    .entry(site.format)
+                    .or_insert_with(|| stage::pipeline(device, site.format));
+                pass.set_pipeline(pipeline);
+                pass.set_immediates(0, &stage::immediates(site, t, srgb));
+                pass.draw(0..3, 0..1);
+                return;
+            }
             if site.mark != MARK {
                 return;
             }
@@ -314,6 +351,7 @@ impl Compositor<FullUi> for Waves {
             pass.draw(0..3, 0..1);
         });
         self.shore = next;
+        self.stage = stage_next;
         self.last = Some(now);
     }
 }

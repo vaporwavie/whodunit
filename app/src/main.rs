@@ -77,6 +77,12 @@ fn main() {
             ("end", |s: &mut FullUi| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut FullUi| fixtures::scene_reveal(&s.core)),
             ("fanout", |s: &mut FullUi| fixtures::scene_fanout(&s.core)),
+            ("dealing", |s: &mut FullUi| fixtures::scene_dealing(&s.core)),
+            ("working", |s: &mut FullUi| fixtures::scene_working(&s.core)),
+            ("thinking", |s: &mut FullUi| {
+                fixtures::scene_thinking(&s.core)
+            }),
+            ("fanning", |s: &mut FullUi| fixtures::scene_fanning(&s.core)),
             ("viewer", |s: &mut FullUi| {
                 fixtures::scene_attach(&s.core);
                 s.viewing = Some(fixtures::screenshot());

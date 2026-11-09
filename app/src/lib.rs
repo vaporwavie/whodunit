@@ -15,4 +15,5 @@ pub mod ui {
     pub mod folder_picker;
     pub mod full;
     pub mod parts;
+    pub mod stage;
 }

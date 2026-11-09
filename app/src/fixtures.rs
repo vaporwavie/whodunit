@@ -181,6 +181,59 @@ pub fn scene_fanout(shared: &Shared) {
     core.t.week.deal = None;
 }
 
+/// The first prompt sent, before the extension has dealt it an agent: the deck shuffles.
+pub fn scene_dealing(shared: &Shared) {
+    let mut core = lock(shared);
+    sidebar(&mut core);
+    core.t.week.deal = None;
+    core.pending_prompt =
+        Some("Research the usual module layout for Rust apps; my full.rs is past 2k lines.".into());
+    core.turn_started = Some(std::time::Instant::now());
+}
+
+/// A fan-out mid-way: one contender still answering, one done, one failed.
+pub fn scene_fanning(shared: &Shared) {
+    let mut core = lock(shared);
+    sidebar(&mut core);
+    core.t.week.deal = None;
+    core.pending_prompt =
+        Some("Research the usual module layout for Rust apps; my full.rs is past 2k lines.".into());
+    core.widgets.insert(
+        "whodunit".into(),
+        vec!["fan-out · A running · B done · C failed · 93s".into()],
+    );
+}
+
+/// The chat while its agent works on a follow-up: prints walk under the streaming answer.
+pub fn scene_working(shared: &Shared) {
+    let mut core = lock(shared);
+    chat(&mut core);
+    sidebar(&mut core);
+    core.t
+        .items
+        .push(Item::user("Now update the README to match."));
+    core.t.items.push(Item::Assistant {
+        blocks: vec![Some(Block::Text(
+            "Updating the README's storage section".into(),
+        ))],
+        streaming: true,
+        error: None,
+    });
+    core.streaming = true;
+    core.turn_started = Some(std::time::Instant::now());
+}
+
+/// The chat while its agent thinks through a follow-up: the thought writes itself in dot art.
+pub fn scene_thinking(shared: &Shared) {
+    scene_working(shared);
+    let mut core = lock(shared);
+    if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
+        *blocks = vec![Some(Block::Thinking(
+            "Which README sections name the store?".into(),
+        ))];
+    }
+}
+
 fn tool(id: &str, name: &str, args: &str) -> Option<Block> {
     Some(Block::Tool {
         id: id.into(),

@@ -10,7 +10,7 @@ One task belongs to one chat, but you can work on several tasks at once. ⌘N st
 
 The sidebar lists chats from every folder in three groups:
 
-- **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too.
+- **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too. While the open chat is dealt an agent, a deck of dot-art cards shuffles under the transcript and deals one off; while it works, a thin scanner line sweeps there instead.
 - **Idle**: the chat is open but isn't working. It may be waiting for your reply, a role or fan-out pick, or a score. A dot marks chats waiting on a dialog. Saved open chats from earlier launches also appear here.
 - **Ended**: you've scored the run and sealed the chat. This section stays at the bottom of the sidebar and starts collapsed; click its heading to show or hide ended chats. Expanded history scrolls separately from open chats.
 
@@ -18,7 +18,7 @@ Each row shows its folder, with the size and score added only after the run ends
 
 Code snippets have a **Copy** button that copies just the code, without Markdown fences. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
-Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab; after that every thought shows in full, capped at twelve lines that scroll.
+Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab: while the agent thinks, lines of redacted dot-art text write themselves, and a finished thought stays a small redacted block, the same size whatever its length. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
 
 The ring next to Send shows how close the chat is to compaction. At 100%, pi compacts on its own: that's the model's window minus `compaction.reserveTokens` from pi's settings (the `whodunit/auto` override wins if you set one). It updates after every response and every batch of tool results, not only when the turn ends. Right after a compaction, pi has no count until the next response, so the ring shows the compaction's own estimate of what it kept, marked `~`. With auto-compaction off, it shows the share of the whole window.
 
@@ -52,7 +52,7 @@ End each run when you're finished with its task, not when you switch chats. ⌘D
 
 ## Fan-outs
 
-A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) to pick the best, and the winner continues the session.
+While the contenders work, each gets a slim lane where its answer will land: its data bus streams while it answers, locks in when it's done, and breaks into static if it fails. A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) to pick the best, and the winner continues the session.
 
 <img alt="A fan-out: three anonymous answers, picked by key" src="../docs/fanout-light.png">
 

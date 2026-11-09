@@ -30,6 +30,7 @@ use crate::transcript::{Item, SHOT_EXTENSIONS, Shot};
 use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
+use crate::ui::stage::{self, Stage};
 
 pub const WORDMARK_FONT: &[u8] = include_bytes!("../../assets/fonts/Fraunces.ttf");
 const WORDMARK: TextStyle = TextStyle::new(20.0, 440.0)
@@ -115,6 +116,7 @@ pub struct FullUi {
     window_focused: bool,
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
+    lanes: stage::LaneClock,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: u64,
@@ -154,6 +156,14 @@ impl HasCore for FullUi {
     fn view_shot(&mut self, shot: Shot) {
         self.viewing = Some(shot);
     }
+
+    fn stage_motion(&self) -> dither::Motion {
+        self.shore_motion()
+    }
+
+    fn lane_age(&self, label: &str) -> f32 {
+        self.lanes.age(label)
+    }
 }
 
 impl FullUi {
@@ -180,6 +190,7 @@ impl FullUi {
             ticked: None,
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
+            lanes: stage::LaneClock::default(),
             slash_pick: (String::new(), 0),
             seen: 0,
             seen_task: 0,
@@ -585,7 +596,11 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(Duration::from_millis(1000 - into));
     }
     let start = !core.unstarted.is_empty();
-    let shore = s.page == Page::Chat && blank(&core) && s.shore_motion() == dither::Motion::Live;
+    let at_work = Stage::of(&core);
+    s.lanes.track(at_work.as_ref());
+    let live = s.page == Page::Chat
+        && (blank(&core) || at_work.is_some())
+        && s.shore_motion() == dither::Motion::Live;
     drop(core);
     if let Some(at) = s.board_rise_at {
         let now = Instant::now();
@@ -599,10 +614,10 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     if start {
         std::thread::spawn(move || crate::core::start_unstarted(&shared));
     }
-    if shore {
+    if live {
         tx.wake_after(dither::FRAME);
     }
-    changed || shore
+    changed || live
 }
 
 /// One session in the sidebar; `names` are the agents' display names, read once per sidebar.
@@ -1162,11 +1177,12 @@ fn blank(core: &Core) -> bool {
 }
 
 fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
-    let fanout = core
-        .t
-        .items
-        .iter()
-        .any(|item| matches!(item, Item::Fanout { .. }));
+    let fanout = Stage::of(core).is_some_and(|stage| stage.wide())
+        || core
+            .t
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Fanout { .. }));
     let width = if fanout { FANOUT_COLUMN } else { COLUMN };
     let empty = blank(core);
     let body: El = if empty {
@@ -2284,6 +2300,100 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
+    }
+
+    #[test]
+    fn a_working_chat_shows_its_stage_until_it_ends() {
+        for (scene, key) in [
+            crate::fixtures::scene_dealing as fn(&Shared),
+            crate::fixtures::scene_working,
+            crate::fixtures::scene_fanning,
+        ]
+        .into_iter()
+        .zip(["/stage-deal", "/stage-scan", "/stage-fanout"])
+        {
+            let core = core(scene);
+            let mut rt = window(core.clone());
+            assert!(shows(&rt, key), "{key}");
+            assert!(rt.wake_deadline().is_some(), "{key} keeps drawing");
+            {
+                let mut core = lock(&core);
+                core.t.week.done = Some(crate::transcript::Done { score: 4 });
+                core.version += 1;
+            }
+            rt.frame(1.0);
+            assert!(!shows(&rt, key), "{key} leaves once the run ends");
+        }
+    }
+
+    #[test]
+    fn a_live_thought_writes_itself_in_place_of_the_scanner() {
+        let core = core(crate::fixtures::scene_thinking);
+        let rt = window(core.clone());
+        let last = lock(&core).t.items.len() - 1;
+        assert!(shows(&rt, &format!("/item-{last}-think0")));
+        assert!(!shows(&rt, "/stage-scan"), "one animation at a time");
+        assert!(rt.wake_deadline().is_some(), "the thought keeps drawing");
+        assert!(
+            rt.elements().iter().all(|e| !e
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("README sections")),
+            "the trace stays hidden until the reveal"
+        );
+    }
+
+    #[test]
+    fn a_sealed_thought_never_shows_its_text_or_its_length() {
+        let height = |body: &str| {
+            let core = core(crate::fixtures::scene_chat);
+            if let Some(Item::Assistant { blocks, .. }) = lock(&core).t.items.get_mut(1) {
+                blocks[0] = Some(crate::transcript::Block::Thinking(body.into()));
+            }
+            let rt = window(core);
+            assert!(
+                rt.elements().iter().all(|e| !e
+                    .text
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("secret")),
+            );
+            rt.elements()
+                .into_iter()
+                .find(|e| e.path.ends_with("/item-1-think0"))
+                .map(|e| e.rect[3])
+                .unwrap()
+        };
+        assert_eq!(
+            height("secret"),
+            height(&"a long secret trace ".repeat(400))
+        );
+    }
+
+    #[test]
+    fn a_fanout_lays_its_lanes_where_the_answers_will_land() {
+        let mut rt = window(core(crate::fixtures::scene_fanning));
+        for label in ["A", "B", "C"] {
+            assert!(
+                shows(&rt, &format!("/stage-fanout/lane-{label}")),
+                "{label}"
+            );
+        }
+        let lane = |rt: &Runtime<FullUi>, label: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.path.ends_with(&format!("/lane-{label}")))
+                .map(|e| e.rect)
+                .unwrap()
+        };
+        let (a, c) = (lane(&rt, "A"), lane(&rt, "C"));
+        assert!((a[2] - c[2]).abs() < 0.5, "lanes share the row evenly");
+        assert!(
+            c[0] + c[2] - a[0] > COLUMN,
+            "a fan-out takes the wide column"
+        );
+        rt.frame(1.0);
     }
 
     #[test]

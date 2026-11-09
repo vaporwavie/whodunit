@@ -298,6 +298,7 @@ async function fanOut(
 	const render = () => {
 		const elapsed = Math.round((Date.now() - started) / 1000);
 		const parts = order.map((_agent, index) => `${LABELS[index]} ${status[index]}`);
+		// The app parses this line into lanes (app/src/ui/stage.rs): keep its words.
 		ctx.ui.setWidget(PROVIDER, [`fan-out · ${parts.join(" · ")} · ${elapsed}s`]);
 	};
 	render();

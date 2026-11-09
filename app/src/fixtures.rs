@@ -181,6 +181,60 @@ pub fn scene_fanout(shared: &Shared) {
     core.t.week.deal = None;
 }
 
+const SPLIT_PROMPT: &str = "research what's the usual pattern for rust projects. I have a full.rs file with +1k LOC that is starting to worry me.";
+
+const SPLIT_A: &str = "## Verdict\n\nYes, `app/src/ui/full.rs` is worth splitting. It is **2,711 lines**, including roughly **500 lines of tests**.\n\nThe problem is not the number itself: Rust has no idiomatic maximum file length. The problem is that one file holds several features that change independently:\n\n| Area | Lines |\n|---|---:|\n| `FullUi` state and lifecycle | 73–235 |\n| Input, composer actions, polling | 237–608 |\n| Sidebar | 609–803 |\n| Slash list and composer | 804–1120 |\n| Chat column and ended panel | 1121–1260 |\n| Scoreboard page | 1261–2190 |\n| Tests | 2191–2711 |\n\n## What Rust projects usually do\n\n- Turn `full.rs` into a module with children: keep `full.rs` as the parent and move each area into `full/sidebar.rs`, `full/composer.rs`, `full/scoreboard.rs`.\n- Keep the parent small: the `FullUi` struct, `view`, and the `use` lines that stitch the children together.\n- Move tests next to the code they test, one `#[cfg(test)] mod tests` per file.\n\n## Suggested order\n\n1. Scoreboard first. It is the largest piece (~930 lines) and only reads `Board`.\n2. Sidebar next; it only needs `Core` and the session list.\n3. Composer and slash list last, since keys route through them.\n\nEach step is a pure move, so `cargo test` and the snapshot scenes confirm nothing changed.";
+
+const SPLIT_B: &str = "I read `app/src/ui/full.rs`. It's about 2,700 lines, more than the 1k you mentioned. Here's what Rust projects usually do and how it applies to this file.\n\n## What Rust projects usually do\n\n- **No set line limit.** Size alone isn't a reason to split. rustc and rust-analyzer have files with several thousand lines. Clippy's `too_many_lines` lint counts lines per function, not per file. Projects split a file when it holds several unrelated topics. Yours does.\n- **Two ways to lay out the files** (Rust book, ch. 7.5):\n  - `full.rs` plus a `full/` folder for its submodules. The book calls this the newer style, and most crates use it now.\n  - `full/mod.rs`, the older style. It still works, but editors then show many tabs named `mod.rs`.\n- **Split by feature, not by kind.** Don't make `types.rs`, `helpers.rs`, `views.rs`. Keep the sidebar's state, view and tests together.\n\n## Applied to full.rs\n\n```text\nsrc/ui/full.rs            // FullUi, view(), on_key(), poll()\nsrc/ui/full/sidebar.rs    // session_row, sidebar groups\nsrc/ui/full/composer.rs   // composer, slash list, attachments\nsrc/ui/full/scoreboard.rs // the scoreboard page\n```\n\nKeep items `pub(super)` so nothing leaks past `ui::full`.\n\n## When to stop\n\nStop when each file answers one question (\"how does the sidebar look?\"). Files of 300–800 lines are common in mature crates.";
+
+const SPLIT_C: &str = "**Yes, splitting it is reasonable, because it holds several distinct responsibilities, not because Rust has a 1,000-line limit.** The usual Rust approach is **cohesive modules with a small interface**, rather than one file per struct or a maximum file size.\n\nI checked the Rust documentation, a mature Rust UI project, and your `app/src/ui/full.rs`.\n\n## What's customary in Rust\n\n- **Split by responsibility.** The [Rust Book](https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html) describes extracting modules into files as they grow. It doesn't prescribe a line count.\n- **Keep a parent module with implementation submodules.** Zed's `workspace` crate keeps `workspace.rs` as the entry point and puts panes, docks and notifications in their own files.\n- **Re-export what callers need.** Callers keep writing `ui::full::view`; the move is invisible to them.\n\n## Your file\n\n| Responsibility | Lines | Depends on |\n|---|---:|---|\n| Window state and keys | ~550 | `Core`, `Tx` |\n| Sidebar | ~200 | `Summary` |\n| Composer | ~320 | `TextEdit`, `Shot` |\n| Scoreboard | ~930 | `Board`, sprites |\n| Tests | ~520 | all of the above |\n\nThe scoreboard is the clear first cut: it has nothing to do with chatting, and it's a third of the file.\n\n## Don't\n\n- Split by line count into `full_1.rs`, `full_2.rs`.\n- Make everything `pub` to get it compiling; use `pub(super)`.";
+
+fn split_fanout(picked: Option<&str>) -> Item {
+    let answer = |label: &str, text: &str| FanAnswer {
+        label: label.into(),
+        ok: true,
+        error: None,
+        text: text.into(),
+    };
+    Item::Fanout {
+        prompt: Some(SPLIT_PROMPT.into()),
+        shots: Vec::new(),
+        answers: vec![
+            answer("A", SPLIT_A),
+            answer("B", SPLIT_B),
+            answer("C", SPLIT_C),
+        ],
+        picked: picked.map(Into::into),
+    }
+}
+
+/// A research fan-out: three long answers with headings, tables and lists, waiting for the pick.
+pub fn scene_fanout_long(shared: &Shared) {
+    let mut core = lock(shared);
+    core.t.items = vec![split_fanout(None)];
+    core.t.first_prompt = Some(SPLIT_PROMPT.into());
+    core.dialog = Some(Dialog {
+        id: "d".into(),
+        title: "Which answer is best?".into(),
+        kind: DialogKind::Select(vec!["A".into(), "B".into(), "C".into()]),
+        highlight: Some(1),
+        generation: 1,
+    });
+    sidebar(&mut core);
+    core.t.week.deal = None;
+}
+
+/// The same fan-out after the pick, with a follow-up under it.
+pub fn scene_fanout_picked(shared: &Shared) {
+    let mut core = lock(shared);
+    core.t.items = vec![
+        split_fanout(Some("C")),
+        Item::user("Do the scoreboard cut first."),
+    ];
+    core.t.first_prompt = Some(SPLIT_PROMPT.into());
+    sidebar(&mut core);
+}
+
 /// The first prompt sent, before the extension has dealt it an agent: the deck shuffles.
 pub fn scene_dealing(shared: &Shared) {
     let mut core = lock(shared);

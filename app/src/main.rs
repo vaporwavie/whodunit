@@ -84,6 +84,12 @@ fn main() {
                 fixtures::scene_thinking(&s.core)
             }),
             ("fanning", |s: &mut FullUi| fixtures::scene_fanning(&s.core)),
+            ("fanout-long", |s: &mut FullUi| {
+                fixtures::scene_fanout_long(&s.core)
+            }),
+            ("fanout-picked", |s: &mut FullUi| {
+                fixtures::scene_fanout_picked(&s.core)
+            }),
             ("viewer", |s: &mut FullUi| {
                 fixtures::scene_attach(&s.core);
                 s.viewing = Some(fixtures::screenshot());

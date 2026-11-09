@@ -43,6 +43,8 @@ Launched from Finder, the app runs your login shell once to find `pi` and your A
 
 ⌘⏎ or **I am done** below the composer opens the confirmation card. Both prompts ask **Call it done?** and keep the score blind: press 5 to 1 to highlight a score, then ⏎ or **I am done** to confirm. **Keep working** or Esc cancels without ending the run.
 
+Once pi confirms the run is sealed, a dither sweep travels from bottom to top. **Done & dusted.** replaces the composer, with a **New task** button (⌘N). The sweep pauses while the window is unfocused and is skipped with Reduce Motion. Opening an already-ended chat doesn't replay it.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../docs/end-dark.png">
   <img alt="Ending a run: five scores on one card, 4 highlighted, confirmation waits for Enter" src="../docs/end-light.png">

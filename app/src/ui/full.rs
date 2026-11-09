@@ -30,6 +30,7 @@ use crate::transcript::{Item, SHOT_EXTENSIONS, Shot};
 use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
+use crate::ui::seal;
 use crate::ui::stage::{self, Stage};
 
 pub const WORDMARK_FONT: &[u8] = include_bytes!("../../assets/fonts/Fraunces.ttf");
@@ -117,6 +118,8 @@ pub struct FullUi {
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
     lanes: stage::LaneClock,
+    seal: seal::Sweep,
+    seen_done: Option<bool>,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: u64,
@@ -191,6 +194,8 @@ impl FullUi {
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
             lanes: stage::LaneClock::default(),
+            seal: seal::Sweep::default(),
+            seen_done: None,
             slash_pick: (String::new(), 0),
             seen: 0,
             seen_task: 0,
@@ -537,10 +542,16 @@ fn catch_up(s: &mut FullUi, core: &Core, tx: &mut Tx) -> bool {
     }
     let reloaded = core.loads != s.seen_loads;
     s.seen_loads = core.loads;
+    let done = core.t.week.done.is_some();
     if switched || reloaded {
         s.copied_code.clear();
+        s.seal.clear();
+        tx.settle();
+    } else if done && s.seen_done == Some(false) && s.page == Page::Chat {
+        s.seal.start(Instant::now());
         tx.settle();
     }
+    s.seen_done = Some(done);
     if changed {
         let built = parts::tool_diffs(core, |id| s.diffs.contains_key(id));
         s.diffs.extend(
@@ -595,6 +606,13 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     let mut changed = s.copied_code.len() != before;
     changed |= s.picker.poll();
     changed |= catch_up(s, &core, tx);
+    let sweeping = s.seal.progress().is_some();
+    s.seal
+        .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
+    changed |= sweeping;
+    if s.seal.progress().is_some() && s.shore_motion() == dither::Motion::Live {
+        tx.wake_after(dither::FRAME);
+    }
     let second = core.turn_started.map(|started| started.elapsed().as_secs());
     if second != s.ticked {
         s.ticked = second;
@@ -1266,7 +1284,7 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     if empty {
         stage = stage.child(dither::slot(dark, s.shore_motion()));
     }
-    stage.child(scroll).child(
+    stage = stage.child(scroll).child(
         col()
             .w_full()
             .items_center()
@@ -1274,7 +1292,13 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
             .pb(18.0)
             .pt(8.0)
             .child(bottom),
-    )
+    );
+    if let Some(progress) = s.seal.progress()
+        && s.shore_motion() != dither::Motion::Still
+    {
+        stage = stage.child(seal::slot(progress, k.c.text_accent));
+    }
+    stage
 }
 
 fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
@@ -2082,6 +2106,8 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         .reduced_motion(cx.is_reduced_motion())
         .build(k);
     rune_kit::root(window, overlays).on_window_focus(|s: &mut FullUi, focused, tx| {
+        s.seal
+            .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
         s.window_focused = focused;
         if !focused {
             folder_picker::release_cmd(s, tx);
@@ -2204,6 +2230,19 @@ fn viewer(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
             .padding(40.0)
             .child(panel),
     );
+}
+
+/// A fixed halfway frame for snapshots of the sealing sweep.
+pub fn scene_sealing(s: &mut FullUi) {
+    crate::fixtures::scene_reveal(&s.core);
+    let core = lock(&s.core);
+    s.seen_task = core.task_id();
+    s.seen_loads = core.loads;
+    s.seen_done = Some(true);
+    let now = Instant::now();
+    s.seal.start(now);
+    s.seal
+        .tick(now + Duration::from_millis(325), dither::Motion::Live, true);
 }
 
 pub fn setup(s: &mut FullUi, waker: rune::Waker) {
@@ -2350,6 +2389,7 @@ mod tests {
         assert_eq!(sent[0]["message"], "/done");
         assert!(core.t.week.done.is_none());
         assert!(core.reveal().is_none());
+        assert!(rt.state.seal.progress().is_none());
     }
 
     #[test]
@@ -2395,6 +2435,7 @@ mod tests {
         assert!(lock(&core).dialog.is_none());
         assert!(lock(&core).t.week.done.is_none());
         assert!(shows(&rt, "/composer-frame"));
+        assert!(!shows(&rt, "/seal-sweep"));
         crate::fixtures::scene_end(&core);
         rt.frame(0.016);
         click(&mut rt, "confirm-end");
@@ -2403,13 +2444,16 @@ mod tests {
             lock(&core).t.week.done.is_none(),
             "wait for pi's done entry"
         );
+        assert!(!shows(&rt, "/seal-sweep"));
         {
             let mut core = lock(&core);
             core.t.week.done = Some(crate::transcript::Done { score: 4 });
             core.version += 1;
         }
         rt.frame(0.016);
+        assert!(shows(&rt, "/seal-sweep"));
         assert!(shows(&rt, "/ended"));
+        assert!(!shows(&rt, "/composer-frame"));
         assert!(lock(&core).reveal().is_some());
     }
 
@@ -2444,6 +2488,44 @@ mod tests {
             let no = rect("keep-working");
             assert!(no[0] + no[2] <= yes[0]);
         }
+    }
+
+    #[test]
+    fn reduced_motion_ends_without_a_sweep() {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core.clone());
+        rt.set_system_reduced_motion(true);
+        rt.frame(0.016);
+        {
+            let mut core = lock(&core);
+            core.t.week.done = Some(crate::transcript::Done { score: 4 });
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert!(shows(&rt, "/ended"));
+        assert!(!shows(&rt, "/seal-sweep"));
+        assert!(lock(&core).reveal().is_some());
+    }
+
+    #[test]
+    fn opening_or_reloading_an_ended_chat_never_replays_the_sweep() {
+        let core = core(crate::fixtures::scene_reveal);
+        let mut rt = window(core.clone());
+        assert!(!shows(&rt, "/seal-sweep"));
+        {
+            let mut core = lock(&core);
+            core.t.week.done = None;
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        {
+            let mut core = lock(&core);
+            core.t.week.done = Some(crate::transcript::Done { score: 4 });
+            core.loads += 1;
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert!(!shows(&rt, "/seal-sweep"));
     }
 
     #[test]

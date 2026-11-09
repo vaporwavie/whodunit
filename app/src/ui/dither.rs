@@ -8,7 +8,7 @@ use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::{El, Spring, SpringPair, Transition, effect};
 
 use crate::ui::full::FullUi;
-use crate::ui::stage;
+use crate::ui::{seal, stage};
 
 const MARK: u32 = 0xd17e;
 /// Dot art reads as motion at this rate, at half the cost of the display's.
@@ -274,6 +274,7 @@ pub struct Waves {
     device: Option<DeviceKey>,
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     stage_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    seal_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The shore's clock: it advances only while live, so a pause resumes where it stopped.
     shore: f32,
     /// The stage's clock, kept the same way.
@@ -291,6 +292,7 @@ impl Compositor<FullUi> for Waves {
         if self.device != Some(key) {
             self.pipelines.clear();
             self.stage_pipelines.clear();
+            self.seal_pipelines.clear();
             self.device = Some(key);
         }
         let clear = f.rt.clear_color();
@@ -314,7 +316,17 @@ impl Compositor<FullUi> for Waves {
         let device = f.device;
         let pipelines = &mut self.pipelines;
         let stage_pipelines = &mut self.stage_pipelines;
+        let seal_pipelines = &mut self.seal_pipelines;
         f.ui.draw_with(f.encoder, f.target, clear, &mut |pass, site| {
+            if site.mark == seal::MARK {
+                let pipeline = seal_pipelines
+                    .entry(site.format)
+                    .or_insert_with(|| seal::pipeline(device, site.format));
+                pass.set_pipeline(pipeline);
+                pass.set_immediates(0, &seal::immediates(site, srgb));
+                pass.draw(0..3, 0..1);
+                return;
+            }
             if site.mark == stage::MARK {
                 let t = match stage::motion(site) {
                     Motion::Live => {

@@ -76,6 +76,7 @@ fn main() {
             ("chat", |s: &mut FullUi| fixtures::scene_chat(&s.core)),
             ("end", |s: &mut FullUi| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut FullUi| fixtures::scene_reveal(&s.core)),
+            ("sealing", full::scene_sealing),
             ("fanout", |s: &mut FullUi| fixtures::scene_fanout(&s.core)),
             ("dealing", |s: &mut FullUi| fixtures::scene_dealing(&s.core)),
             ("working", |s: &mut FullUi| fixtures::scene_working(&s.core)),

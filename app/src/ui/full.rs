@@ -1039,8 +1039,20 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
         (Some(_), _) => "Reply…",
     };
     let field = composer_field(s, placeholder, k).key("composer");
-    let mut frame = parts::panel(k, s.composer.focused || s.dropping)
+    let focused = s.composer.focused || s.dropping;
+    let mut frame = col()
         .key("composer-frame")
+        .w_full()
+        .radius(k.radius.lg)
+        .fill(k.c.surface_raised_base)
+        .border(
+            1.0,
+            if focused {
+                k.c.border_base
+            } else {
+                k.c.border_weak
+            },
+        )
         .padding(6.0);
     if let Some(strip) = attachment_strip(s, k) {
         frame = frame.child(strip);

@@ -8,11 +8,11 @@ The sidebar lists runs from every folder, newest first, each under its folder's 
 
 ## Install
 
-It needs macOS and Rust (the version is pinned in `rust-toolchain.toml`). Set up the extension first, as in the [root README](../README.md#setup).
+It needs macOS or Linux, and Rust (the version is pinned in `rust-toolchain.toml`). Set up the extension first, as in the [root README](../README.md#setup).
 
 ```sh
 cd app
-scripts/bundle.sh    # installs ~/Applications/Whodunit.app
+scripts/bundle.sh    # installs ~/Applications/Whodunit.app (macOS) or ~/.local/bin + a desktop entry (Linux)
 ```
 
 Launched from Finder, the app runs your login shell once to find `pi` and your API keys. They stay in memory and are never written to disk.

@@ -30,6 +30,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 
 fn main() {
     rune_mac::launch();
+    rune::set_app_id("whodunit");
     rune::prewarm_gpu();
     let args = rune::extra_args();
     if args.iter().any(|a| a == "--scoreboard") {

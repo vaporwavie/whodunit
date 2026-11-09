@@ -23,7 +23,7 @@ rune comes from the fork `vaporwavie/rune` (branch `whodunit`, pinned by rev), w
 ```sh
 cargo build --release                      # build
 cargo clippy && cargo fmt                  # lint / format
-scripts/bundle.sh                          # release build, installs ~/Applications/Whodunit.app
+scripts/bundle.sh                          # release build, installs ~/Applications/Whodunit.app (macOS) or ~/.local/bin/whodunit + desktop entry (Linux)
 cargo run --release -- -- --scoreboard     # print the scoreboard as Markdown and exit
 cargo run --release -- -- --cwd ~/some/dir # run pi in that folder (app args go after a second `--`, read via rune::extra_args)
 

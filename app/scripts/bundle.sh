@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds Whodunit and installs it in ~/Applications: a chat window and a menu bar icon while it runs.
+# Builds Whodunit and installs it: ~/Applications/Whodunit.app on macOS, ~/.local (binary, icons, desktop entry) on Linux.
 set -euo pipefail
 cd "${0:A:h}/.."
 cargo build --release
@@ -41,4 +41,38 @@ PLIST
   echo "$app"
 }
 
-bundle "Whodunit" io.github.vaporwavie.whodunit
+install_linux() {
+  local name=$1
+  local share="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local bin="$HOME/.local/bin/whodunit"
+  local desktop="$share/applications/whodunit.desktop"
+  install -Dm755 target/release/whodunit "$bin"
+  for size in 32 48 64 128 256 512; do
+    local icon="$share/icons/hicolor/${size}x${size}/apps/whodunit.png"
+    mkdir -p "${icon:h}"
+    magick assets/icons/full.png -resize ${size}x${size} "$icon"
+  done
+  mkdir -p "${desktop:h}"
+  cat > "$desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=$name
+Comment=Blind trials for coding agents in pi
+Exec=$bin
+Icon=whodunit
+Terminal=false
+Categories=Development;
+StartupWMClass=whodunit
+DESKTOP
+  if (( $+commands[update-desktop-database] )); then
+    update-desktop-database -q "${desktop:h}" || true
+  fi
+  echo "$bin"
+  echo "$desktop"
+}
+
+case $OSTYPE in
+  darwin*) bundle "Whodunit" io.github.vaporwavie.whodunit ;;
+  linux*) install_linux "Whodunit" ;;
+  *) echo "bundle.sh: unsupported OS $OSTYPE" >&2; exit 1 ;;
+esac

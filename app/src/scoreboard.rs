@@ -1,11 +1,9 @@
-//! The week's scoreboard: runs.jsonl joined with each run's session file, one table per role,
-//! plus a Claude Code reference row from the last 30 days of transcripts.
+//! The week's scoreboard: runs.jsonl joined with each run's session file, one table per role.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -100,17 +98,8 @@ pub struct Table {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Reference {
-    pub sessions: usize,
-    pub your_minutes: Option<f64>,
-    pub agent_minutes: Option<f64>,
-    pub turns: Option<f64>,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct Board {
     pub tables: Vec<Table>,
-    pub reference: Reference,
     pub runs: usize,
     pub decisions: Decisions,
 }
@@ -169,14 +158,7 @@ fn read_runs(path: &Path) -> Vec<Value> {
 }
 
 pub fn compute() -> Board {
-    compute_from(
-        &config::week_dir().join("runs.jsonl"),
-        &config::home().join(".claude/projects"),
-    )
-}
-
-pub fn compute_from(runs_file: &Path, claude_projects: &Path) -> Board {
-    let records = read_runs(runs_file);
+    let records = read_runs(&config::week_dir().join("runs.jsonl"));
     let mut deals: HashMap<String, Value> = HashMap::new();
     let mut dones: HashMap<String, Value> = HashMap::new();
     let mut fanouts: HashMap<String, Value> = HashMap::new();
@@ -308,134 +290,8 @@ pub fn compute_from(runs_file: &Path, claude_projects: &Path) -> Board {
 
     Board {
         tables,
-        reference: claude_reference(claude_projects),
         runs: deals.len(),
         decisions,
-    }
-}
-
-/// Unix ms from an ISO 8601 UTC timestamp such as `2026-11-07T15:56:23.348Z`.
-fn iso_ms(s: &str) -> Option<f64> {
-    let (date, time) = s.split_once('T')?;
-    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
-    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
-    let time = time.trim_end_matches('Z');
-    let mut t = time.split(':');
-    let (h, min, sec) = (
-        t.next()?.parse::<f64>().ok()?,
-        t.next()?.parse::<f64>().ok()?,
-        t.next()?.parse::<f64>().ok()?,
-    );
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(((days as f64 * 86_400.0) + h * 3600.0 + min * 60.0 + sec) * 1000.0)
-}
-
-/// A real prompt, not a tool result or a harness-injected message.
-fn is_prompt(entry: &Value) -> bool {
-    if entry
-        .get("isMeta")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return false;
-    }
-    match entry.pointer("/message/content") {
-        Some(Value::String(text)) => !text.starts_with('<'),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .any(|b| b.get("type").and_then(Value::as_str) == Some("text")),
-        _ => false,
-    }
-}
-
-fn claude_reference(projects: &Path) -> Reference {
-    let since = SystemTime::now() - Duration::from_secs(30 * 86_400);
-    let mut files: Vec<PathBuf> = Vec::new();
-    for project in fs::read_dir(projects)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-    {
-        for file in fs::read_dir(project.path())
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-        {
-            let path = file.path();
-            let recent = fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t >= since);
-            if recent && path.extension().is_some_and(|x| x == "jsonl") {
-                files.push(path);
-            }
-        }
-    }
-    let (mut yours, mut agents, mut turns) = (Vec::new(), Vec::new(), Vec::new());
-    for path in &files {
-        let Ok(file) = fs::File::open(path) else {
-            continue;
-        };
-        let (mut users, mut your, mut agent) = (0usize, 0.0f64, 0.0f64);
-        let (mut start, mut last): (Option<f64>, Option<f64>) = (None, None);
-        for line in BufReader::new(file).lines().map_while(Result::ok) {
-            let kind_user = line.contains(r#""type":"user""#);
-            if !kind_user && !line.contains(r#""type":"assistant""#) {
-                continue;
-            }
-            let Ok(entry) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if entry
-                .get("isSidechain")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let Some(at) = entry
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(iso_ms)
-            else {
-                continue;
-            };
-            match str_of(&entry, "type").as_str() {
-                "user" if is_prompt(&entry) => {
-                    if let (Some(s), Some(e)) = (start, last) {
-                        agent += (e - s).max(0.0) / 60_000.0;
-                    }
-                    if let Some(e) = last.filter(|_| users > 0) {
-                        your += (at - e).clamp(0.0, 600_000.0) / 60_000.0;
-                    }
-                    users += 1;
-                    start = Some(at);
-                    last = None;
-                }
-                "assistant" => last = Some(at),
-                _ => {}
-            }
-        }
-        if users == 0 {
-            continue;
-        }
-        if let (Some(s), Some(e)) = (start, last) {
-            agent += (e - s).max(0.0) / 60_000.0;
-        }
-        yours.push(your);
-        agents.push(agent);
-        turns.push(users.saturating_sub(1) as f64);
-    }
-    Reference {
-        sessions: yours.len(),
-        your_minutes: median(&yours),
-        agent_minutes: median(&agents),
-        turns: median(&turns),
     }
 }
 
@@ -482,13 +338,5 @@ pub fn markdown(board: &Board) -> String {
             ));
         }
     }
-    let r = &board.reference;
-    out.push_str(&format!(
-        "\n## Claude Code reference (last 30 days, {} sessions)\n\nmedian your-min {} · median agent-min {} · median turns {}. Different tasks and no blind deal, so read it as context.\n",
-        r.sessions,
-        fmt(r.your_minutes, 1, ""),
-        fmt(r.agent_minutes, 1, ""),
-        fmt(r.turns, 0, ""),
-    ));
     out
 }

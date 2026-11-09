@@ -997,25 +997,6 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
         }
         page = page.child(t);
     }
-    let r = &board.reference;
-    let fmt = |v: Option<f64>, d: usize| v.map_or("—".to_owned(), |v| format!("{v:.d$}"));
-    page = page.child(
-        col()
-            .gap(4.0)
-            .child(text("Claude Code reference").font(k.ty.body_medium).color(c.text_base))
-            .child(
-                text(format!(
-                    "Last 30 days, {} sessions: median your-min {}, agent-min {}, turns {}. Different tasks and no blind deal, so read it as context.",
-                    r.sessions,
-                    fmt(r.your_minutes, 1),
-                    fmt(r.agent_minutes, 1),
-                    fmt(r.turns, 0)
-                ))
-                .font(k.ty.small)
-                .color(c.text_muted)
-                .wrap(),
-            ),
-    );
     col()
         .key("scoreboard-page")
         .w_full()

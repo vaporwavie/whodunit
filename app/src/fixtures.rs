@@ -410,7 +410,7 @@ fn board_row(
 
 /// The scoreboard page with a few weeks of runs.
 pub fn board() -> crate::scoreboard::Board {
-    use crate::scoreboard::{Board, Decisions, Reference, Table};
+    use crate::scoreboard::{Board, Decisions, Table};
     Board {
         runs: 31,
         decisions: Decisions {
@@ -459,12 +459,6 @@ pub fn board() -> crate::scoreboard::Board {
                 ],
             },
         ],
-        reference: Reference {
-            sessions: 42,
-            your_minutes: Some(5.5),
-            agent_minutes: Some(12.25),
-            turns: Some(9.0),
-        },
     }
 }
 

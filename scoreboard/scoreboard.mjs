@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -7,18 +7,14 @@ const HOME = homedir();
 const DIR = join(HOME, ".pi", "agent", "whodunit");
 const ROLES_PATH = join(DIR, "roles.json");
 const RUNS_PATH = join(DIR, "runs.jsonl");
-const MODELS_STORE = join(HOME, ".pi", "agent", "models-store.json");
-const CLAUDE_PROJECTS = join(HOME, ".claude", "projects");
 const IDLE_CAP_MIN = 10;
 const TOO_FEW = 3;
-const REFERENCE_DAYS = 30;
 
 function parseArgs(argv) {
-	const args = { since: undefined, until: undefined, reference: true };
+	const args = { since: undefined, until: undefined };
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--since") args.since = new Date(argv[++i]);
 		else if (argv[i] === "--until") args.until = new Date(argv[++i]);
-		else if (argv[i] === "--no-reference") args.reference = false;
 	}
 	return args;
 }
@@ -134,88 +130,6 @@ function collectPiRuns(args) {
 	return { runs: results, fanoutRecords };
 }
 
-function anthropicPrices() {
-	if (!existsSync(MODELS_STORE)) return new Map();
-	const prices = new Map();
-	const visit = (node) => {
-		if (Array.isArray(node)) return node.forEach(visit);
-		if (!node || typeof node !== "object") return;
-		if (node.provider === "anthropic" && node.id && node.cost) prices.set(node.id, node.cost);
-		Object.values(node).forEach(visit);
-	};
-	visit(JSON.parse(readFileSync(MODELS_STORE, "utf8")));
-	return prices;
-}
-
-function claudeCodeReference() {
-	if (!existsSync(CLAUDE_PROJECTS)) return undefined;
-	const prices = anthropicPrices();
-	const cutoff = Date.now() - REFERENCE_DAYS * 24 * 60 * 60 * 1000;
-	const sessions = [];
-	for (const project of readdirSync(CLAUDE_PROJECTS)) {
-		const projectDir = join(CLAUDE_PROJECTS, project);
-		if (!statSync(projectDir).isDirectory()) continue;
-		for (const file of readdirSync(projectDir)) {
-			if (!file.endsWith(".jsonl")) continue;
-			const path = join(projectDir, file);
-			if (statSync(path).mtimeMs < cutoff) continue;
-			const session = claudeSession(path, prices, cutoff);
-			if (session) sessions.push(session);
-		}
-	}
-	if (sessions.length === 0) return undefined;
-	return {
-		sessions: sessions.length,
-		medianYourMin: median(sessions.map((session) => session.yourMin)),
-		meanAgentMin: mean(sessions.map((session) => session.agentMin)),
-		meanTurns: mean(sessions.map((session) => session.turnsAfterFirst)),
-		costPerRun: mean(sessions.map((session) => session.costUsd)),
-	};
-}
-
-function isClaudePrompt(entry) {
-	if (entry.type !== "user" || entry.isMeta || entry.isSidechain) return false;
-	const content = entry.message?.content;
-	if (typeof content === "string") return !content.startsWith("<");
-	if (!Array.isArray(content)) return false;
-	return content.some((block) => block.type === "text" && !block.text.startsWith("<")) && !content.some((block) => block.type === "tool_result");
-}
-
-function claudeSession(path, prices, cutoff) {
-	const entries = readJsonl(path);
-	const events = [];
-	const seen = new Set();
-	let costUsd = 0;
-	let prompts = 0;
-	let first;
-	for (const entry of entries) {
-		const at = Date.parse(entry.timestamp);
-		if (Number.isNaN(at)) continue;
-		if (isClaudePrompt(entry)) {
-			prompts += 1;
-			first ??= at;
-			events.push({ kind: "prompt", at });
-		} else if (entry.type === "assistant" && !entry.isSidechain) {
-			events.push({ kind: "agent", at });
-			const { id, model, usage } = entry.message ?? {};
-			if (!usage || seen.has(id)) continue;
-			seen.add(id);
-			const price = prices.get(model);
-			if (!price) continue;
-			const cacheWrite = usage.cache_creation_input_tokens ?? 0;
-			costUsd +=
-				((usage.input_tokens ?? 0) * price.input +
-					(usage.output_tokens ?? 0) * price.output +
-					(usage.cache_read_input_tokens ?? 0) * price.cacheRead +
-					cacheWrite * price.cacheWrite) /
-				1_000_000;
-		}
-	}
-	if (prompts === 0 || first < cutoff) return undefined;
-	const timing = turnTiming(events.sort((a, b) => a.at - b.at));
-	return { ...timing, turnsAfterFirst: prompts - 1, costUsd };
-}
-
 const DECIDERS = [
 	["jev", "Jev"],
 	["picker", "picker"],
@@ -291,16 +205,6 @@ function main() {
 	const switches = runs.filter((run) => run.switched).length;
 	const compactions = runs.reduce((sum, run) => sum + run.compactions, 0);
 	out.push(`Spend at list prices: $${fmt(runSpend + losersSpend, 2)} total, of which fan-out losers $${fmt(losersSpend, 2)}. Manual switches: ${switches}. Compactions: ${compactions}.`, "");
-	if (args.reference) {
-		const reference = claudeCodeReference();
-		out.push(`### Claude Code reference (last ${REFERENCE_DAYS} days, not a controlled comparison)`, "");
-		if (!reference) {
-			out.push("No Claude Code transcripts found.");
-		} else {
-			out.push("| sessions | median your-min | mean agent-min | mean turns after first | cost/run |", "|---|---|---|---|---|");
-			out.push(`| ${reference.sessions} | ${fmt(reference.medianYourMin)} | ${fmt(reference.meanAgentMin)} | ${fmt(reference.meanTurns)} | $${fmt(reference.costPerRun, 2)} |`);
-		}
-	}
 	console.log(out.join("\n"));
 }
 

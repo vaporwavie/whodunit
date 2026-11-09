@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rune::{App, AppSpec, Chrome, WindowSpec};
 
 use whodunit::config::{self, AppConfig};
-use whodunit::core::{Core, Shared, lock};
+use whodunit::core::{Core, Leave, Shared, lock};
 use whodunit::ui::full::{self, FullUi};
 use whodunit::{fixtures, menu_bar, scoreboard};
 
@@ -57,9 +57,12 @@ fn main() {
         .unwrap_or_else(config::home);
     let shared: Shared = Arc::new(Mutex::new(Core::new(config, cwd)));
     if !headless {
-        lock(&shared).refresh_sessions();
+        let mut core = lock(&shared);
+        core.refresh_sessions();
+        core.request_leave(Leave::New);
+        drop(core);
         let shared = shared.clone();
-        std::thread::spawn(move || whodunit::core::start_pi(&shared, None, None));
+        std::thread::spawn(move || whodunit::core::start_unstarted(&shared));
     }
 
     let full_spec = AppSpec {

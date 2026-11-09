@@ -112,15 +112,25 @@ fn parking_keeps_a_dealt_task_even_before_its_first_message_and_drops_unused_cha
 #[test]
 fn navigation_neither_ends_nor_aborts_a_working_task() {
     let mut core = core();
+    let working = core.open_task(
+        "/project".into(),
+        Some(Path::new("/current.jsonl")),
+        Transcript::default(),
+    );
     core.streaming = true;
-    core.session_file = Some("/current.jsonl".into());
     core.request_leave(Leave::New);
-    assert!(core.streaming);
-    assert!(core.dialog.is_none());
-    assert!(matches!(core.relaunch, Some((_, None))));
+    assert_ne!(core.task_id(), working, "the new task shows at once");
+    assert!(core.t.items.is_empty());
+    assert_eq!(core.unstarted, [core.task_id()]);
+    assert!(core.tasks[&working].streaming && core.tasks[&working].dialog.is_none());
     core.request_leave(Leave::Open(PathBuf::from("/current.jsonl")));
-    assert!(
-        matches!(core.relaunch, Some((_, None))),
+    assert_eq!(core.task_id(), working, "back to the same process");
+    assert!(core.streaming);
+    core.request_leave(Leave::Open(PathBuf::from("/current.jsonl")));
+    assert_eq!(
+        core.task_id(),
+        working,
         "selecting the current chat is a no-op"
     );
+    assert_eq!(core.unstarted.len(), 1);
 }

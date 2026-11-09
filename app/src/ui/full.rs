@@ -92,6 +92,7 @@ pub struct FullUi {
     slash_pick: (String, usize),
     seen: u64,
     seen_task: u64,
+    seen_loads: u64,
     drafts: HashMap<u64, (TextEdit, TextEdit, u64, u64)>,
     editor_generation: u64,
     dialog_generation: u64,
@@ -131,6 +132,7 @@ impl FullUi {
             slash_pick: (String::new(), 0),
             seen: 0,
             seen_task: 0,
+            seen_loads: 0,
             drafts: HashMap::new(),
             editor_generation: 0,
             dialog_generation: 0,
@@ -155,9 +157,28 @@ impl FullUi {
         dither::Motion::Live
     }
 
-    fn open_scoreboard(&mut self) {
+    /// Pages switch often, and often from the keyboard, so the new one lands whole in one frame.
+    fn show(&mut self, page: Page, tx: &mut Tx) {
+        if self.page != page {
+            tx.settle();
+        }
+        self.page = page;
+    }
+
+    /// Shows the chat in this commit, so the next frame is already it. A chat that needs a pi
+    /// process gets one from `poll`, off the UI thread, on the frame this asks for.
+    pub(crate) fn leave(&mut self, leave: Leave, tx: &mut Tx) {
+        self.show(Page::Chat, tx);
+        let shared = self.core.clone();
+        let mut core = lock(&shared);
+        core.request_leave(leave);
+        catch_up(self, &core, tx);
+        start_soon(&core, tx);
+    }
+
+    fn open_scoreboard(&mut self, tx: &mut Tx) {
         self.board = Some(scoreboard::compute());
-        self.page = Page::Scoreboard;
+        self.show(Page::Scoreboard, tx);
         self.board_rise_at = Some(Instant::now() + BOARD_RISE_AFTER);
     }
 }
@@ -166,15 +187,20 @@ fn submit(s: &mut FullUi, tx: &mut Tx, follow_up: bool) {
     let text = s.composer.text.clone();
     if text.trim() == "/scoreboard" {
         s.composer.clear();
-        s.open_scoreboard();
+        s.open_scoreboard(tx);
         return;
     }
     if lock(&s.core).dialog.is_some() {
         return;
     }
     s.composer.clear();
-    s.page = Page::Chat;
-    lock(&s.core).submit(&text, follow_up);
+    s.show(Page::Chat, tx);
+    let shared = s.core.clone();
+    let mut core = lock(&shared);
+    core.submit(&text, follow_up);
+    // `/new` leaves as the New task button does.
+    catch_up(s, &core, tx);
+    start_soon(&core, tx);
     tx.scroll_to_bottom("transcript");
 }
 
@@ -317,8 +343,7 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('n') {
-        lock(&s.core).request_leave(Leave::New);
-        s.page = Page::Chat;
+        s.leave(Leave::New, tx);
         s.composer.focused = true;
         return true;
     }
@@ -331,11 +356,11 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('1') {
-        s.page = Page::Chat;
+        s.show(Page::Chat, tx);
         return true;
     }
     if ev.is_command('2') {
-        s.open_scoreboard();
+        s.open_scoreboard(tx);
         return true;
     }
     if ev.key == Key::Escape && lock(&s.core).streaming {
@@ -345,13 +370,11 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
     false
 }
 
-pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
-    let mut core = lock(&s.core);
-    if let Some(next) = core.expire_toasts() {
-        tx.wake_after(next + Duration::from_millis(50));
-    }
-    let picker = s.picker.poll();
-    let mut changed = core.version != s.seen || picker;
+/// Brings the window's own state up to the core: the selected chat's drafts, diffs and
+/// prefilled text. Another chat, or this one reloaded from pi, lands whole in one frame: nothing
+/// grows, reveals or springs over from what was on screen. Returns whether any of it changed.
+fn catch_up(s: &mut FullUi, core: &Core, tx: &mut Tx) -> bool {
+    let mut changed = core.version != s.seen;
     s.seen = core.version;
     let switched = core.task_id() != s.seen_task;
     if switched {
@@ -371,27 +394,22 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
         s.editor_generation = editor_generation;
         s.dialog_generation = dialog_generation;
         s.diffs.clear();
+        tx.scroll_to_bottom_instant("transcript");
         changed = true;
     }
-    if changed || switched {
-        let built = parts::tool_diffs(&core, |id| s.diffs.contains_key(id));
-        changed |= !built.is_empty();
+    let reloaded = core.loads != s.seen_loads;
+    s.seen_loads = core.loads;
+    if switched || reloaded {
+        tx.settle();
+    }
+    if changed {
+        let built = parts::tool_diffs(core, |id| s.diffs.contains_key(id));
         s.diffs.extend(
             built
                 .into_iter()
                 .map(|(id, files)| (id, DiffState::new(files))),
         );
     }
-    let second = core.turn_started.map(|started| started.elapsed().as_secs());
-    if second != s.ticked {
-        s.ticked = second;
-        changed = true;
-    }
-    if let Some(started) = core.turn_started {
-        let into = started.elapsed().subsec_millis() as u64;
-        tx.wake_after(Duration::from_millis(1000 - into));
-    }
-    let relaunch = core.relaunch.take();
     if let Some((generation, text)) = core
         .editor_text
         .clone()
@@ -412,6 +430,35 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
             s.dialog_edit.focused = true;
         }
     }
+    changed
+}
+
+/// A chat selected without a pi process gets one from `poll`, off the UI thread. Ask for that
+/// frame, since a switch leaves nothing animating to bring it.
+fn start_soon(core: &Core, tx: &mut Tx) {
+    if !core.unstarted.is_empty() {
+        tx.wake_after(Duration::ZERO);
+    }
+}
+
+pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
+    let shared = s.core.clone();
+    let mut core = lock(&shared);
+    if let Some(next) = core.expire_toasts() {
+        tx.wake_after(next + Duration::from_millis(50));
+    }
+    let mut changed = s.picker.poll();
+    changed |= catch_up(s, &core, tx);
+    let second = core.turn_started.map(|started| started.elapsed().as_secs());
+    if second != s.ticked {
+        s.ticked = second;
+        changed = true;
+    }
+    if let Some(started) = core.turn_started {
+        let into = started.elapsed().subsec_millis() as u64;
+        tx.wake_after(Duration::from_millis(1000 - into));
+    }
+    let start = !core.unstarted.is_empty();
     let shore = s.page == Page::Chat && blank(&core) && s.shore_motion() == dither::Motion::Live;
     drop(core);
     if let Some(at) = s.board_rise_at {
@@ -423,12 +470,8 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
             tx.wake_after(at - now);
         }
     }
-    if let Some((cwd, session)) = relaunch {
-        let core = s.core.clone();
-        std::thread::spawn(move || crate::core::start_pi(&core, Some(cwd), session));
-    }
-    if switched {
-        tx.scroll_to_bottom_instant("transcript");
+    if start {
+        std::thread::spawn(move || crate::core::start_unstarted(&shared));
     }
     if shore {
         tx.wake_after(dither::FRAME);
@@ -442,10 +485,7 @@ fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
     let mut r = SidebarRow::new(summary.title.clone())
         .subtitle(summary.subtitle())
         .selected(current && s.page == Page::Chat)
-        .on_select(move |s: &mut FullUi, _| {
-            s.page = Page::Chat;
-            lock(&s.core).request_leave(Leave::Open(path.clone()));
-        });
+        .on_select(move |s: &mut FullUi, tx| s.leave(Leave::Open(path.clone()), tx));
     if core.session_state(summary) == SessionState::Working {
         r = r.status(RowStatus::Busy);
     } else if core.tasks_waiting(summary) {
@@ -466,10 +506,9 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 .icon(&PLUS)
                 .detail(cmd("N"))
                 .height(32.0)
-                .on_select(|s: &mut FullUi, _| {
-                    s.page = Page::Chat;
+                .on_select(|s: &mut FullUi, tx| {
+                    s.leave(Leave::New, tx);
                     s.composer.focused = true;
-                    lock(&s.core).request_leave(Leave::New);
                 })
                 .build(k)
                 .key("new"),
@@ -480,7 +519,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 .detail(cmd("2"))
                 .height(32.0)
                 .selected(s.page == Page::Scoreboard)
-                .on_select(|s: &mut FullUi, _| s.open_scoreboard())
+                .on_select(|s: &mut FullUi, tx| s.open_scoreboard(tx))
                 .build(k)
                 .key("scoreboard"),
         );
@@ -767,10 +806,9 @@ fn ended(k: &Kit) -> El {
                     .variant(ButtonVariant::Contrast)
                     .shortcut(cmd("N"))
                     .show_shortcut()
-                    .on_press(|s: &mut FullUi| {
-                        s.page = Page::Chat;
+                    .on_press_tx(|s: &mut FullUi, tx| {
+                        s.leave(Leave::New, tx);
                         s.composer.focused = true;
-                        lock(&s.core).request_leave(Leave::New);
                     })
                     .build(k),
             ),
@@ -892,8 +930,8 @@ fn scoreboard_empty(k: &Kit) -> El {
                 .variant(ButtonVariant::Outline)
                 .shortcut(cmd("1"))
                 .show_shortcut()
-                .on_press(|s: &mut FullUi| {
-                    s.page = Page::Chat;
+                .on_press_tx(|s: &mut FullUi, tx| {
+                    s.show(Page::Chat, tx);
                     s.composer.focused = true;
                 })
                 .build(k),
@@ -1363,4 +1401,225 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
 
 pub fn setup(s: &mut FullUi, waker: rune::Waker) {
     lock(&s.core).add_waker(Arc::new(move || waker()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transcript::Transcript;
+    use rune::{Env, Mods, Runtime};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    fn core(scene: fn(&Shared)) -> Shared {
+        let core = Arc::new(Mutex::new(Core::new(
+            config::AppConfig::default(),
+            "/fixture".into(),
+        )));
+        scene(&core);
+        core
+    }
+
+    fn transcript_of(scene: fn(&Shared)) -> Transcript {
+        std::mem::take(&mut lock(&core(scene)).t)
+    }
+
+    fn window(core: Shared) -> Runtime<FullUi> {
+        let mut rt = Runtime::new(
+            FullUi::new(core),
+            view,
+            (1180.0, 780.0),
+            Env::new(true, 1.0),
+        );
+        rt.poll = Some(poll);
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        rt.frame(1.0);
+        rt
+    }
+
+    /// What the frame on screen still has in motion: anything moving, fading, growing or
+    /// revealing, or drawn otherwise than once every track has landed. A running tool's
+    /// spinner loops on purpose.
+    fn in_motion(rt: &mut Runtime<FullUi>) -> Vec<String> {
+        let first = rt.elements();
+        rt.frame(1.0);
+        let settled: HashMap<String, f32> = rt
+            .elements()
+            .into_iter()
+            .map(|e| (e.path, e.opacity))
+            .collect();
+        first
+            .into_iter()
+            .filter(|e| e.loop_phase.is_none())
+            .filter(|e| {
+                e.moving
+                    || e.revealing
+                    || e.in_growing_row
+                    || e.exiting
+                    || settled.get(&e.path) != Some(&e.opacity)
+            })
+            .map(|e| e.path)
+            .collect()
+    }
+
+    fn shows(rt: &Runtime<FullUi>, path: &str) -> bool {
+        rt.elements().iter().any(|e| e.path.ends_with(path))
+    }
+
+    fn title(rt: &Runtime<FullUi>) -> Option<String> {
+        let elements = rt.elements();
+        let title = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("title"))?;
+        title.text.clone()
+    }
+
+    /// Unit tests never start pi: that would run the login shell and write the real app.json.
+    fn unstarted(core: &Shared) -> usize {
+        std::mem::take(&mut lock(core).unstarted).len()
+    }
+
+    /// A press and release on the element, and the frame drawn right after them.
+    fn click(rt: &mut Runtime<FullUi>, key: &str) {
+        let (x, y) = rt.find(key).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.016);
+    }
+
+    fn summary(path: &Path, t: &Transcript) -> Summary {
+        Summary {
+            path: path.to_owned(),
+            cwd: "/fixture".into(),
+            title: t.title().unwrap(),
+            week: t.week.clone(),
+        }
+    }
+
+    /// A run scored in an earlier launch, saved where no live chat has it open.
+    fn saved_chat(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("whodunit-{name}-{}.jsonl", std::process::id()));
+        let lines = [
+            r#"{"type":"session","version":3,"id":"s","cwd":"/fixture"}"#,
+            r#"{"type":"message","id":"1","parentId":null,"message":{"role":"user","content":"Saved task"}}"#,
+            r#"{"type":"custom","id":"2","parentId":"1","customType":"whodunit.deal","data":{"role":"builder","size":"S","agent":"lab/model"}}"#,
+            r#"{"type":"message","id":"3","parentId":"2","message":{"role":"assistant","content":[{"type":"text","text":"Saved answer"}]}}"#,
+            r#"{"type":"custom","id":"4","parentId":"3","customType":"whodunit.done","data":{"score":4}}"#,
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_clicked_chat_is_the_next_frame() {
+        let one = PathBuf::from("/fixture/one.jsonl");
+        let two = PathBuf::from("/fixture/two.jsonl");
+        let three = saved_chat("next-frame");
+        let core = core(|_| {});
+        {
+            let mut core = lock(&core);
+            for (path, scene) in [
+                (&one, crate::fixtures::scene_chat as fn(&Shared)),
+                (&two, crate::fixtures::scene_run),
+            ] {
+                let t = transcript_of(scene);
+                core.sessions.push(summary(path, &t));
+                core.open_task("/fixture".into(), Some(path), t);
+            }
+            let saved = crate::sessions::transcript(&three).unwrap();
+            core.sessions.push(summary(&three, &saved));
+        }
+        let mut rt = window(core.clone());
+        // Two live chats, then one only on disk.
+        for (path, chat, started) in [
+            (&one, "Rename SessionStore to Vault", 0),
+            (&two, "Retry uploads with backoff", 0),
+            (&three, "Saved task", 1),
+        ] {
+            click(&mut rt, &format!("session-{}", path.display()));
+            assert_eq!(title(&rt).as_deref(), Some(chat));
+            if started > 0 {
+                assert!(rt.wake_deadline().is_some(), "poll starts its process");
+            }
+            assert_eq!(unstarted(&core), started);
+            assert_eq!(in_motion(&mut rt), Vec::<String>::new(), "{chat}");
+        }
+        assert!(shows(&rt, "/ended"), "the saved chat shows as ended");
+        assert!(shows(&rt, &format!("/Ended/session-{}", three.display())));
+        let _ = std::fs::remove_file(three);
+    }
+
+    /// The new task is the frame right after `leave` asks for it.
+    fn new_task_is_the_next_frame(leave: impl Fn(&mut Runtime<FullUi>)) {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core.clone());
+        leave(&mut rt);
+        rt.frame(0.016);
+        assert_eq!(title(&rt).as_deref(), Some("New task"));
+        assert!(shows(&rt, "/empty-intro"));
+        assert!(rt.wake_deadline().is_some(), "poll starts its process");
+        assert_eq!(unstarted(&core), 1);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_new_task_is_the_next_frame() {
+        new_task_is_the_next_frame(|rt| {
+            rt.key(KeyEvent {
+                key: Key::Command('n'),
+                mods: Mods {
+                    cmd: true,
+                    ..Mods::default()
+                },
+            })
+        });
+        new_task_is_the_next_frame(|rt| {
+            rt.update(|s, _| s.composer.replace_text("/new"));
+            rt.frame(0.016);
+            rt.key(Key::Enter.into());
+        });
+    }
+
+    #[test]
+    fn a_transcript_reloaded_from_pi_lands_whole() {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core.clone());
+        lock(&core).open_task("/fixture".into(), None, Transcript::default());
+        rt.frame(0.016);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+        {
+            let mut core = lock(&core);
+            core.t = transcript_of(crate::fixtures::scene_long);
+            core.loads += 1;
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+        assert!(shows(&rt, "/item-119-md2"), "it opens at the latest answer");
+    }
+
+    #[test]
+    fn pages_switch_in_one_frame() {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core);
+        rt.update(|s, tx| {
+            s.board = Some(crate::fixtures::board());
+            s.show(Page::Scoreboard, tx);
+        });
+        rt.frame(0.016);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+        assert!(shows(&rt, "/scoreboard-page"));
+        rt.key(KeyEvent {
+            key: Key::Command('1'),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.016);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+        assert!(shows(&rt, "/composer-frame"));
+    }
 }

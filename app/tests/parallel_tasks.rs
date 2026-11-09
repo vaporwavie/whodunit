@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rune::Tx;
+use serde_json::json;
 use whodunit::config::AppConfig;
-use whodunit::core::{Core, Leave, SessionState, Shared, lock, start_pi};
+use whodunit::core::{Core, Leave, SessionState, Shared, lock, start_unstarted};
 use whodunit::transcript::{Block, Item};
 use whodunit::ui::full::{self, FullUi};
 
@@ -27,11 +28,7 @@ fn wait(shared: &Shared, done: impl Fn(&Core) -> bool) {
 
 fn navigate(shared: &Shared, leave: Leave) {
     lock(shared).request_leave(leave);
-    let (cwd, session) = lock(shared)
-        .relaunch
-        .take()
-        .expect("navigation is immediate, even for an open run");
-    start_pi(shared, Some(cwd), session);
+    start_unstarted(shared);
     wait(shared, |core| core.ready);
 }
 
@@ -65,36 +62,34 @@ fn answer(core: &Core) -> String {
         .collect()
 }
 
-#[test]
-fn chats_keep_working_independently() {
-    // HOME and login-shell discovery are isolated in a child test process, not changed in a
-    // multithreaded test runner. start_pi must never write to the user's app.json here.
-    if std::env::var_os("WHODUNIT_FAKE_HOME").is_none() {
-        let home = std::env::temp_dir().join(format!("whodunit-parallel-{}", std::process::id()));
-        std::fs::create_dir_all(&home).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "chats_keep_working_independently", "--nocapture"])
-            .env("HOME", &home)
-            .env("SHELL", "/no-login-shell")
-            .env("WHODUNIT_FAKE_HOME", &home)
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_dir_all(home);
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
+/// Runs `body` in a child test process with its own HOME and no login shell, rather than
+/// changing them in a multithreaded test runner. Starting pi must never write to the user's app.json.
+fn isolated(test: &str, body: fn(&Path)) {
+    if let Some(home) = std::env::var_os("WHODUNIT_FAKE_HOME") {
+        return body(Path::new(&home));
     }
-    run_chats();
+    let home = std::env::temp_dir().join(format!("whodunit-{test}-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("HOME", &home)
+        .env("SHELL", "/no-login-shell")
+        .env("WHODUNIT_FAKE_HOME", &home)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(home);
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
+/// The app's shared state, running the deterministic RPC peer as pi.
 #[cfg(unix)]
-fn run_chats() {
+fn app(root: &Path) -> Shared {
     use std::os::unix::fs::PermissionsExt;
-    let root = PathBuf::from(std::env::var_os("WHODUNIT_FAKE_HOME").unwrap());
     let bin = root.join("pi");
     std::fs::copy(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pi.py"),
@@ -102,19 +97,35 @@ fn run_chats() {
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let shared = Arc::new(Mutex::new(Core::new(
+    Arc::new(Mutex::new(Core::new(
         AppConfig {
             pi_bin: bin.to_string_lossy().into_owned(),
             ..AppConfig::default()
         },
-        root.clone(),
-    )));
-    start_pi(&shared, None, None);
-    wait(&shared, |core| core.ready);
+        root.to_owned(),
+    )))
+}
+
+#[test]
+fn chats_keep_working_independently() {
+    isolated("chats_keep_working_independently", run_chats);
+}
+
+#[cfg(unix)]
+fn run_chats(root: &Path) {
+    let shared = app(root);
+    // The first task is typed before its process has started; pi reads it once it has.
+    lock(&shared).request_leave(Leave::New);
+    lock(&shared).submit("task A", false);
+    assert!(
+        lock(&shared).toasts.is_empty(),
+        "{:?}",
+        lock(&shared).toasts
+    );
+    start_unstarted(&shared);
     let mut ui = FullUi::new(shared.clone());
     full::poll(&mut ui, 0.0, &mut Tx::default());
     ui.composer.replace_text("unsent follow-up for A");
-    lock(&shared).submit("task A", false);
     wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
     let a = PathBuf::from(lock(&shared).session_file.clone().unwrap());
     let a_id = lock(&shared).task_id();
@@ -170,8 +181,7 @@ fn run_chats() {
     assert_ne!(lock(&shared).stats.cost, a_cost);
     let other = root.join("another-project");
     std::fs::create_dir_all(&other).unwrap();
-    start_pi(&shared, Some(other.clone()), None);
-    wait(&shared, |core| core.ready);
+    navigate(&shared, Leave::NewIn(other.clone()));
     assert_eq!(lock(&shared).cwd, other);
     lock(&shared).submit("task C", false);
     wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
@@ -221,4 +231,74 @@ fn run_chats() {
         assert!(Instant::now() < until, "pi children were not shut down");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn a_saved_chat_opens_whole_before_pi_answers() {
+    isolated("a_saved_chat_opens_whole_before_pi_answers", open_saved);
+}
+
+#[cfg(unix)]
+fn open_saved(root: &Path) {
+    let shared = app(root);
+    // A run scored in an earlier launch, with an answer the user branched away from.
+    let dir = root.join(".pi/agent/sessions/--saved--");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("saved.jsonl");
+    let lines = [
+        json!({"type": "session", "version": 3, "id": "s", "cwd": root}),
+        json!({"type": "message", "id": "1", "parentId": null, "message": {"role": "user", "content": "saved task"}}),
+        json!({"type": "custom", "id": "2", "parentId": "1", "customType": "whodunit.deal", "data": {"role": "builder", "size": "S", "agent": "secret-lab/secret-model"}}),
+        json!({"type": "message", "id": "3", "parentId": "2", "message": {"role": "assistant", "content": [{"type": "text", "text": "abandoned answer"}]}}),
+        json!({"type": "message", "id": "4", "parentId": "2", "message": {"role": "assistant", "content": [{"type": "text", "text": "saved answer"}]}}),
+        json!({"type": "custom", "id": "5", "parentId": "4", "customType": "whodunit.done", "data": {"score": 4}}),
+    ];
+    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    std::fs::write(&path, text).unwrap();
+    lock(&shared).refresh_sessions();
+    assert_eq!(state(&shared, &path), SessionState::Ended);
+
+    // Opened from the sidebar, it shows whole and stays ended before its pi process exists.
+    lock(&shared).request_leave(Leave::Open(path.clone()));
+    {
+        let core = lock(&shared);
+        assert_eq!(
+            core.unstarted.len(),
+            1,
+            "its process starts off the UI thread"
+        );
+        assert_eq!(answer(&core), "saved answer");
+        assert!(core.reveal().is_some());
+    }
+    assert_eq!(state(&shared, &path), SessionState::Ended);
+
+    start_unstarted(&shared);
+    wait(&shared, |core| core.ready && core.loads == 1);
+    assert_eq!(answer(&lock(&shared)), "saved answer");
+    assert_eq!(state(&shared, &path), SessionState::Ended);
+}
+
+#[test]
+fn a_chat_whose_pi_cannot_start_stops_waiting() {
+    isolated("a_chat_whose_pi_cannot_start_stops_waiting", cannot_start);
+}
+
+fn cannot_start(root: &Path) {
+    let shared = Arc::new(Mutex::new(Core::new(
+        AppConfig {
+            pi_bin: root.join("no-pi-here").to_string_lossy().into_owned(),
+            ..AppConfig::default()
+        },
+        root.to_owned(),
+    )));
+    lock(&shared).request_leave(Leave::New);
+    lock(&shared).submit("typed before pi started", false);
+    start_unstarted(&shared);
+    let core = lock(&shared);
+    assert!(
+        core.exited
+            .as_deref()
+            .is_some_and(|e| e.contains("no-pi-here"))
+    );
+    assert!(core.pending_prompt.is_none(), "nothing is left classifying");
 }

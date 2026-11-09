@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rune::{Key, KeyEvent, Mods};
 use whodunit::config::{self, AppConfig};
-use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_pi};
+use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_unstarted};
 use whodunit::transcript::{Block, END_TITLE, Item};
 use whodunit::ui::full::dialog_keys;
 
@@ -89,7 +89,8 @@ impl Run {
         let cwd = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
         std::fs::create_dir_all(&cwd).expect("create test folder");
         let shared: Shared = Arc::new(Mutex::new(Core::new(AppConfig::load(), cwd.clone())));
-        start_pi(&shared, None, None);
+        lock(&shared).request_leave(Leave::New);
+        start_unstarted(&shared);
         wait_for(&shared, "pi to load the session", 60, |core| core.ready);
         Run {
             shared,
@@ -144,8 +145,7 @@ impl Run {
             core.t.week.done.is_some()
         });
         lock(&self.shared).request_leave(Leave::New);
-        let (cwd, target) = lock(&self.shared).relaunch.take().expect("new task");
-        start_pi(&self.shared, Some(cwd), target);
+        start_unstarted(&self.shared);
         wait_for(&self.shared, "the new session", 60, |core| {
             core.ready && core.session_file.as_deref() != Some(session) && core.t.items.is_empty()
         });

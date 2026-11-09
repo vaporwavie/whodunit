@@ -1,4 +1,4 @@
-//! Reads pi session files for the sidebar and the scoreboard's automatic metrics.
+//! Reads pi session files for the sidebar, reopened chats and the scoreboard's automatic metrics.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::transcript::{DEAL, DONE, FANOUT_PICK, SWITCH, Week, content_text, str_of};
+use crate::transcript::{DEAL, DONE, FANOUT_PICK, SWITCH, Transcript, Week, content_text, str_of};
 
 #[derive(Clone, Debug)]
 pub struct Summary {
@@ -64,6 +64,19 @@ pub fn list(root: &Path) -> Vec<Summary> {
         .filter(|summary| summary.week.deal.is_some())
         .take(SIDEBAR_LIMIT)
         .collect()
+}
+
+/// A saved chat as its pi process will load it: the branch from the file's last entry, pi's
+/// leaf on load, back to the root. `None` for pre-tree files without ids, which pi migrates.
+pub fn transcript(path: &Path) -> Option<Transcript> {
+    let text = fs::read_to_string(path).ok()?;
+    let entries: Vec<Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|entry| entry.get("type").and_then(Value::as_str) != Some("session"))
+        .collect();
+    let leaf = entries.last()?.get("id").and_then(Value::as_str)?;
+    Some(Transcript::from_entries(&entries, Some(leaf)))
 }
 
 fn summarize(path: &Path) -> Option<Summary> {

@@ -27,9 +27,17 @@ def response(command, data=None):
 
 
 def append(entry):
+    # Entries form pi's tree: each points at the one before it, and the last is the leaf.
+    if entry['type'] != 'session':
+        entry['id'] = uuid.uuid4().hex[:8]
+        entry['parentId'] = leaf()
     entries.append(entry)
     with path.open('a') as file:
         file.write(json.dumps(entry, separators=(',', ':')) + '\n')
+
+
+def leaf():
+    return next((e['id'] for e in reversed(entries) if 'id' in e), None)
 
 
 def finish(command):
@@ -56,7 +64,7 @@ for line in sys.stdin:
     if kind == 'get_state':
         response(command, {'sessionFile': str(path), 'isStreaming': busy})
     elif kind == 'get_entries':
-        response(command, {'entries': entries})
+        response(command, {'entries': [e for e in entries if 'id' in e], 'leafId': leaf()})
     elif kind == 'get_commands':
         response(command, {'commands': []})
     elif kind == 'get_session_stats':

@@ -11,7 +11,7 @@ use rune::{
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput, glyphs};
 
 use crate::config::{self, AppConfig};
-use crate::core::cmd;
+use crate::core::{Leave, cmd};
 use crate::folders::{self, Recent};
 use crate::ui::full::FullUi;
 
@@ -359,28 +359,27 @@ pub fn release_cmd(s: &mut FullUi, tx: &mut Tx) {
     s.picker.set_cmd(false, tx);
 }
 
-fn run_in(s: &mut FullUi, path: PathBuf) {
+fn run_in(s: &mut FullUi, path: PathBuf, tx: &mut Tx) {
     close(s);
-    let core = s.core.clone();
-    std::thread::spawn(move || crate::core::start_pi(&core, Some(path), None));
+    s.leave(Leave::NewIn(path), tx);
 }
 
-fn pick_here(s: &mut FullUi) {
+fn pick_here(s: &mut FullUi, tx: &mut Tx) {
     let dir = s.picker.dir.clone();
-    run_in(s, dir);
+    run_in(s, dir, tx);
 }
 
 /// One step: a subfolder opens to its own subfolders, "Go up" opens the parent, a recent runs pi
 /// at once, and with nothing selected the browsed folder runs pi there.
-fn open(s: &mut FullUi) {
+fn open(s: &mut FullUi, tx: &mut Tx) {
     let Some(line) = s.picker.highlighted() else {
-        pick_here(s);
+        pick_here(s, tx);
         return;
     };
     let path = s.picker.path_of(line);
     match line {
         Line::Folder(_) | Line::Up => s.picker.browse(path),
-        _ => run_in(s, path),
+        _ => run_in(s, path, tx),
     }
 }
 
@@ -396,9 +395,11 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Down => s.picker.step(1),
         Key::Home => s.picker.select(0),
         Key::End => s.picker.step(isize::MAX / 2),
-        Key::Enter if ev.mods.cmd => pick_here(s),
-        Key::Enter => open(s),
-        Key::Right if empty && matches!(s.picker.highlighted(), Some(Line::Folder(_))) => open(s),
+        Key::Enter if ev.mods.cmd => pick_here(s, tx),
+        Key::Enter => open(s, tx),
+        Key::Right if empty && matches!(s.picker.highlighted(), Some(Line::Folder(_))) => {
+            open(s, tx)
+        }
         Key::Backspace | Key::Left if empty => s.picker.up(),
         _ => return false,
     }
@@ -529,9 +530,9 @@ fn line_view(p: &FolderPicker, line: Line, target: usize, k: &Kit) -> El {
     // Pointer movement, not hover: rows scrolling under a resting pointer must not steal the
     // keyboard's selection.
     item.on_pointer_move(move |s: &mut FullUi, _| s.picker.select(target))
-        .on_press(move |s: &mut FullUi| {
+        .on_press_tx(move |s: &mut FullUi, tx| {
             s.picker.select(target);
-            open(s);
+            open(s, tx);
         })
 }
 
@@ -590,12 +591,12 @@ fn footer(p: &FolderPicker, k: &Kit) -> El {
                     .variant(ButtonVariant::Contrast)
                     .shortcut(if p.cmd { cmd("⏎") } else { "⏎".into() })
                     .show_shortcut()
-                    .on_press(|s: &mut FullUi| {
+                    .on_press_tx(|s: &mut FullUi, tx| {
                         if s.picker.cmd {
-                            pick_here(s);
+                            pick_here(s, tx);
                             return;
                         }
-                        open(s);
+                        open(s, tx);
                     })
                     .build(k),
             ),

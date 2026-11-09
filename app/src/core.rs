@@ -75,6 +75,8 @@ pub fn score_key(option: &str) -> Option<(&str, &str)> {
 #[derive(Clone, Debug)]
 pub enum Leave {
     New,
+    /// A new task in another folder.
+    NewIn(PathBuf),
     Open(PathBuf),
 }
 
@@ -109,6 +111,8 @@ enum Pending {
 pub struct Task {
     pub cwd: PathBuf,
     pi: Option<Pi>,
+    /// Records sent before the chat's process started, for it to read first.
+    outbox: Vec<Value>,
     generation: u64,
     pending: HashMap<String, Pending>,
     pub t: Transcript,
@@ -127,6 +131,8 @@ pub struct Task {
     pub commands: Vec<Command>,
     pub exited: Option<String>,
     pub ready: bool,
+    /// Bumped each time pi's entries replace the transcript, which the window lands at once.
+    pub loads: u64,
 }
 
 impl Task {
@@ -165,8 +171,9 @@ pub struct Core {
     next_generation: u64,
     next_id: u64,
     wakers: Vec<Arc<dyn Fn() + Send + Sync>>,
-    /// Navigation is serviced by the window without blocking its UI thread.
-    pub relaunch: Option<(PathBuf, Option<PathBuf>)>,
+    /// Chats selected before their pi process exists. The window starts them off its UI
+    /// thread with `start_unstarted`.
+    pub unstarted: Vec<u64>,
 }
 
 impl std::ops::Deref for Core {
@@ -207,7 +214,7 @@ impl Core {
             wakers: Vec::new(),
             version: 1,
             sessions: Vec::new(),
-            relaunch: None,
+            unstarted: Vec::new(),
         }
     }
 
@@ -250,7 +257,15 @@ impl Core {
         self.next_id += 1;
         let id = format!("app-{}", self.next_id);
         record["id"] = json!(id);
-        let sent = self.pi.as_ref().is_some_and(|pi| pi.send(&record));
+        let sent = match &self.pi {
+            Some(pi) => pi.send(&record),
+            // Shown before its process started: it reads these once it has.
+            None if self.exited.is_none() => {
+                self.outbox.push(record);
+                true
+            }
+            None => false,
+        };
         if sent {
             if let Some(pending) = pending {
                 self.pending.insert(id, pending);
@@ -299,16 +314,20 @@ impl Core {
         self.task.generation
     }
 
-    pub fn session_state(&self, summary: &Summary) -> SessionState {
-        let task = self
-            .tasks
+    /// The live chat, selected or not, that has `path` open.
+    fn live_task(&self, path: &Path) -> Option<&Task> {
+        self.tasks
             .values()
             .chain(std::iter::once(&self.task))
             .find(|t| {
                 t.session_file
                     .as_deref()
-                    .is_some_and(|file| Path::new(file) == summary.path)
-            });
+                    .is_some_and(|f| Path::new(f) == path)
+            })
+    }
+
+    pub fn session_state(&self, summary: &Summary) -> SessionState {
+        let task = self.live_task(&summary.path);
         let week = task.map_or(&summary.week, |t| &t.t.week);
         if week.done.is_some() {
             SessionState::Ended
@@ -320,15 +339,8 @@ impl Core {
     }
 
     pub fn tasks_waiting(&self, summary: &Summary) -> bool {
-        self.tasks
-            .values()
-            .chain(std::iter::once(&self.task))
-            .any(|task| {
-                task.session_file
-                    .as_deref()
-                    .is_some_and(|file| Path::new(file) == summary.path)
-                    && task.dialog.is_some()
-            })
+        self.live_task(&summary.path)
+            .is_some_and(|task| task.dialog.is_some())
     }
 
     fn park_task(&mut self, task: Task) {
@@ -493,27 +505,37 @@ impl Core {
         self.send(json!({"type": "abort"}), Some(Pending::Generic("abort")));
     }
 
+    /// Selects the chat now, so the window draws it in the frame that asked: a live chat as it
+    /// is, a saved one from its file, a new one empty. One without a pi process yet waits in
+    /// `unstarted`.
     pub fn request_leave(&mut self, leave: Leave) {
-        match leave {
-            Leave::New => {
-                self.relaunch = Some((self.cwd.clone(), None));
-                self.touch();
-            }
+        let (cwd, session) = match leave {
+            Leave::New => (self.cwd.clone(), None),
+            Leave::NewIn(cwd) => (cwd, None),
             Leave::Open(path) => {
-                let path = path.to_string_lossy().into_owned();
-                if self.session_file.as_deref() == Some(path.as_str()) {
+                if let Some(generation) = self.live_task(&path).map(|t| t.generation) {
+                    if let Some(task) = self.tasks.remove(&generation) {
+                        let previous = std::mem::replace(&mut self.task, task);
+                        self.park_task(previous);
+                        self.touch();
+                    }
                     return;
                 }
                 let cwd = self
                     .sessions
                     .iter()
-                    .find(|s| s.path.to_string_lossy() == path)
-                    .map(|s| s.cwd.clone())
-                    .unwrap_or_else(|| self.cwd.clone());
-                self.relaunch = Some((cwd, Some(PathBuf::from(path))));
-                self.touch();
+                    .find(|s| s.path == path)
+                    .map_or_else(|| self.cwd.clone(), |s| s.cwd.clone());
+                (cwd, Some(path))
             }
-        }
+        };
+        let t = session
+            .as_deref()
+            .and_then(sessions::transcript)
+            .unwrap_or_default();
+        let generation = self.open_task(cwd, session.as_deref(), t);
+        self.unstarted.push(generation);
+        self.touch();
     }
 
     pub fn answer_dialog(&mut self, answer: Option<Value>) {
@@ -871,6 +893,7 @@ impl Core {
                     .unwrap_or_default();
                 let leaf = data.get("leafId").and_then(Value::as_str);
                 self.t = Transcript::from_entries(&entries, leaf);
+                self.loads += 1;
             }
             Pending::Stats => {
                 self.stats.cost = data.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
@@ -932,6 +955,22 @@ impl Core {
         self.touch();
     }
 
+    /// Selects a new chat in `cwd` and parks the current one. A saved chat brings its transcript,
+    /// so it shows whole, in its own sidebar group, before its pi process has loaded it.
+    pub(crate) fn open_task(&mut self, cwd: PathBuf, session: Option<&Path>, t: Transcript) -> u64 {
+        self.next_generation += 1;
+        let task = Task {
+            cwd,
+            generation: self.next_generation,
+            session_file: session.map(|path| path.to_string_lossy().into_owned()),
+            t,
+            ..Task::default()
+        };
+        let previous = std::mem::replace(&mut self.task, task);
+        self.park_task(previous);
+        self.next_generation
+    }
+
     fn load_session(&mut self) {
         self.send(json!({"type": "get_state"}), Some(Pending::State));
         self.send(json!({"type": "get_entries"}), Some(Pending::Entries));
@@ -940,50 +979,31 @@ impl Core {
     }
 }
 
-/// Selects an existing live chat, or starts an independent pi process for a new/resumed chat.
-pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>) {
+/// Starts the pi process of each chat selected without one. The first start waits on the login
+/// shell, so the window calls this off its UI thread.
+pub fn start_unstarted(shared: &Shared) {
+    let unstarted = std::mem::take(&mut lock(shared).unstarted);
+    for generation in unstarted {
+        start_pi(shared, generation);
+    }
+}
+
+/// Starts an independent pi process for a chat `request_leave` selected, wherever it is now.
+fn start_pi(shared: &Shared, generation: u64) {
     let login = crate::config::login_env();
     let mut core = lock(shared);
-    if let Some(path) = &session {
-        if core
-            .session_file
-            .as_deref()
-            .is_some_and(|file| Path::new(file) == path)
-        {
-            return;
-        }
-        let live = core.tasks.iter().find_map(|(id, task)| {
-            task.session_file
-                .as_deref()
-                .filter(|file| Path::new(file) == path)
-                .map(|_| *id)
-        });
-        if let Some(id) = live {
-            let mut task = core.tasks.remove(&id).expect("live task");
-            std::mem::swap(&mut core.task, &mut task);
-            core.park_task(task);
-            core.touch();
-            let wakers = core.wakers();
-            drop(core);
-            wakers.iter().for_each(|wake| wake());
-            return;
-        }
-    }
-    let cwd = cwd.unwrap_or_else(|| core.cwd.clone());
+    // A new task left before its process started is gone, and needs none.
+    let Some((cwd, session)) = core
+        .tasks
+        .values()
+        .chain(std::iter::once(&core.task))
+        .find(|t| t.generation == generation)
+        .map(|t| (t.cwd.clone(), t.session_file.clone()))
+    else {
+        return;
+    };
     core.config.remember(&cwd);
     core.config.save();
-    core.next_generation += 1;
-    let generation = core.next_generation;
-    let task = Task {
-        cwd: cwd.clone(),
-        generation,
-        session_file: session
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        ..Task::default()
-    };
-    let previous = std::mem::replace(&mut core.task, task);
-    core.park_task(previous);
     if !Path::new(&core.config.pi_bin).is_file()
         && let Some(bin) = &login.pi_bin
     {
@@ -993,7 +1013,6 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>)
     let spec_bin = core.config.pi_bin.clone();
     let for_records = Arc::downgrade(shared);
     let for_exit = Arc::downgrade(shared);
-    let session = session.map(|path| path.to_string_lossy().into_owned());
     let mut args = vec!["--model", "whodunit/auto"];
     if let Some(path) = &session {
         args.extend(["--session", path.as_str()]);
@@ -1036,16 +1055,24 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>)
             wakers.iter().for_each(|wake| wake());
         },
     );
-    match spawned {
+    core.for_task(generation, |core| match spawned {
         Ok(pi) => {
             core.pi = Some(pi);
             core.send(json!({"type": "get_commands"}), Some(Pending::Commands));
             core.load_session();
+            let outbox = std::mem::take(&mut core.outbox);
+            if let Some(pi) = &core.pi {
+                outbox.iter().for_each(|record| {
+                    pi.send(record);
+                });
+            }
         }
         Err(error) => {
+            core.outbox.clear();
+            core.pending_prompt = None;
             core.exited = Some(format!("Couldn’t start {spec_bin}: {error}"));
         }
-    }
+    });
     core.touch();
     let wakers = core.wakers();
     drop(core);

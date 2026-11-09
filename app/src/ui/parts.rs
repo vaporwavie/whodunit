@@ -130,13 +130,46 @@ fn mono_frame(k: &Kit) -> El {
         .fill(k.c.layer_01)
 }
 
-fn markdown(body: String, k: &Kit) -> Markdown {
+fn markdown<S: HasCore>(body: String, k: &Kit) -> Markdown {
     let style = MarkdownStyle::from_kit(k)
         .code_block(k.c.layer_01, Color::TRANSPARENT)
         .code_block_font(k.ty.mono)
         .code_block_padding(12.0, 10.0)
         .prose_width(PROSE_WIDTH);
-    Markdown::new(body).style(style).selectable(true)
+    let k = k.clone();
+    Markdown::new(body)
+        .style(style)
+        .selectable(true)
+        .code_frame(move |card, code| {
+            let source = code.source.to_owned();
+            let mut header = row().w_full().px(12.0).pt(6.0).center_y();
+            if let Some(language) = code.language {
+                header = header.child(
+                    text(language.to_owned())
+                        .font(k.ty.small)
+                        .color(k.c.text_muted),
+                );
+            }
+            header = header.child(spacer()).child(
+                Button::new("Copy")
+                    .variant(ButtonVariant::Ghost)
+                    .control_size(ControlSize::Small)
+                    .on_press_tx(move |s: &mut S, tx| {
+                        tx.copy(source.clone());
+                        with_core(s, |core| core.toast("Snippet copied", "info"));
+                    })
+                    .build(&k)
+                    .key("copy-code")
+                    .label("Copy code"),
+            );
+            col()
+                .key(format!("code-{}", code.index))
+                .w_full()
+                .radius(k.radius.md)
+                .fill(k.c.layer_01)
+                .child(header)
+                .child(card)
+        })
 }
 
 /// The first `chars` characters of `line`.
@@ -405,7 +438,7 @@ fn assistant_view<S: HasCore>(
     for (index, block) in blocks.iter().enumerate() {
         match block {
             Some(Block::Text(body)) if !body.is_empty() => {
-                let md = markdown(body.clone(), k)
+                let md = markdown::<S>(body.clone(), k)
                     .streaming(streaming)
                     .build(k)
                     .key(format!("{key}-md{index}"));
@@ -482,7 +515,7 @@ fn fanout_card<S: HasCore>(
             .font(k.ty.small)
             .color(c.danger.fg)
             .wrap(),
-        _ => markdown(answer.text.clone(), k).build(k),
+        _ => markdown::<S>(answer.text.clone(), k).build(k),
     };
     col()
         .key(format!("fan-{}", answer.label))

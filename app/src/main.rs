@@ -14,6 +14,13 @@ use whodunit::core::{Core, Shared, lock};
 use whodunit::ui::full::{self, FullUi};
 use whodunit::{fixtures, menu_bar, scoreboard};
 
+const FONTS: [&[u8]; 4] = [
+    rune_theme_opencode::FONTS[0],
+    rune_theme_opencode::FONTS[1],
+    rune_theme_opencode::FONTS[2],
+    full::WORDMARK_FONT,
+];
+
 const HEADLESS_FLAGS: [&str; 6] = [
     "--snap",
     "--tree",
@@ -59,7 +66,7 @@ fn main() {
         on_key: Some(full::on_key),
         poll: Some(full::poll),
         setup: Some(full::setup),
-        fonts: rune_theme_opencode::FONTS,
+        fonts: &FONTS,
         families: rune_theme_opencode::FAMILIES,
         scenes: &[
             ("empty", |s: &mut FullUi| fixtures::scene_empty(&s.core)),

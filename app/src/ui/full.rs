@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rune::{
-    Cx, El, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, Transition, Tx, col, row, text,
+    Cx, El, Family, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, TextStyle, Transition, Tx,
+    col, row, text,
 };
 use rune_kit::diff::DiffState;
 use rune_kit::shell::{
@@ -27,6 +28,13 @@ use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
 
+pub const WORDMARK_FONT: &[u8] = include_bytes!("../../assets/fonts/Fraunces.ttf");
+const WORDMARK: TextStyle = TextStyle::new(20.0, 440.0)
+    .family(Family::Named("Fraunces"))
+    .variations("'SOFT' 100, 'WONK' 1, 'opsz' 144")
+    .lh(24.0);
+/// Sidebar width past the traffic lights that fits the wordmark and the toggle.
+const WORDMARK_ROOM: f32 = 146.0;
 static PLUS: Icon = Icon {
     name: "aw-plus",
     view: 16.0,
@@ -1001,6 +1009,16 @@ fn scoreboard_page(board: &Board, k: &Kit) -> El {
         })
 }
 
+fn wordmark(k: &Kit, past_lights: bool) -> El {
+    let lead = if past_lights { 0.0 } else { shell::INSET };
+    text("Whodunit")
+        .key("wordmark")
+        .font(WORDMARK)
+        .color(k.c.text_base)
+        .pl(lead)
+        .truncate()
+}
+
 pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let core = lock(&s.core);
@@ -1012,12 +1030,15 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     };
     let mut overlays = Vec::new();
     folder_picker::build(s, k, &mut overlays);
-    let window = SplitView::new(main)
-        .sidebar(
-            &s.sidebar,
-            |s: &mut FullUi| &mut s.sidebar,
-            sidebar(s, &core, k),
-        )
+    let mut window = SplitView::new(main).sidebar(
+        &s.sidebar,
+        |s: &mut FullUi| &mut s.sidebar,
+        sidebar(s, &core, k),
+    );
+    if s.sidebar.width() - cx.titlebar_inset() >= WORDMARK_ROOM {
+        window = window.sidebar_title(wordmark(k, cx.titlebar_inset() > 0.0));
+    }
+    let window = window
         .toolbar(toolbar(&core, s.page, k))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)

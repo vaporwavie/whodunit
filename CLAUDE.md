@@ -18,7 +18,7 @@ Four pieces live here; data lives under `~/.pi/agent/whodunit/`:
 
 Toolchain is pinned to Rust 1.99.1 (edition 2024) via `rust-toolchain.toml`.
 
-rune comes from the fork `vaporwavie/rune` (branch `whodunit`, pinned by rev), which adds `TextArea::plain`, `Button::show_shortcut`, `MarkdownStyle::prose_width` and the OpenCode theme's contrast fixes on top of upstream. Switch back to `anomalyco/rune` once those land there. To try rune changes locally, add a `[patch."https://github.com/vaporwavie/rune"]` pointing at a checkout, and don't commit it.
+rune comes from the fork `vaporwavie/rune` (branch `whodunit`, pinned by rev), which adds `TextArea::plain`, `Button::show_shortcut`, `MarkdownStyle::prose_width`, `SplitView::sidebar_title` and the OpenCode theme's contrast fixes on top of upstream. Switch back to `anomalyco/rune` once those land there. To try rune changes locally, add a `[patch."https://github.com/vaporwavie/rune"]` pointing at a checkout, and don't commit it.
 
 ```sh
 cargo build --release                      # build

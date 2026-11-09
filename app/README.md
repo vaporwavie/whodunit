@@ -77,6 +77,7 @@ On Linux, read ⌘ as Ctrl.
 | ⌘1 | Chat |
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |
+| ⌘I | Focus the composer (or the open dialog's field) |
 | ⌘⏎ | Queue a follow-up while the agent works |
 | ⌘V | Paste text, or attach a copied image or image files |
 | ⌫ | In an empty composer: remove the last attached image |

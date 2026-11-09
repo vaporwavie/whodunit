@@ -464,11 +464,29 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.open_scoreboard(tx);
         return true;
     }
+    if ev.is_command('i') {
+        focus_composer(s, tx);
+        return true;
+    }
     if ev.key == Key::Escape && lock(&s.core).streaming {
         lock(&s.core).abort();
         return true;
     }
     false
+}
+
+/// ⌘I: back to the chat with the keyboard in its composer, or in the field of the dialog that
+/// stands in for it. A sealed chat has neither.
+fn focus_composer(s: &mut FullUi, tx: &mut Tx) {
+    s.show(Page::Chat, tx);
+    let core = lock(&s.core);
+    if let Some(dialog) = &core.dialog {
+        if matches!(dialog.kind, DialogKind::Input { .. }) {
+            s.dialog_edit.focused = true;
+        }
+    } else if core.t.week.done.is_none() {
+        s.composer.focused = true;
+    }
 }
 
 /// Brings the window's own state up to the core: the selected chat's drafts, diffs and
@@ -2643,5 +2661,27 @@ mod tests {
         rt.frame(0.016);
         assert_eq!(in_motion(&mut rt), Vec::<String>::new());
         assert!(shows(&rt, "/composer-frame"));
+    }
+
+    #[test]
+    fn command_i_focuses_the_composer_from_any_page() {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core);
+        rt.update(|s, tx| {
+            s.composer.focused = false;
+            s.board = Some(crate::fixtures::board());
+            s.show(Page::Scoreboard, tx);
+        });
+        rt.frame(0.016);
+        rt.key(KeyEvent {
+            key: Key::Command('i'),
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.016);
+        assert!(shows(&rt, "/composer-frame"));
+        assert!(rt.state.composer.focused);
     }
 }

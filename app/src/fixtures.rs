@@ -286,11 +286,9 @@ pub fn scene_run(shared: &Shared) {
     core.sessions[2].title = "Port the scoreboard to Node".into();
 }
 
-pub fn scene_guard(shared: &Shared) {
-    let mut core = lock(shared);
-    chat(&mut core);
-    sidebar(&mut core);
-    core.leave = Some(crate::core::Leave::New);
+/// Working, idle and ended chats, without the old score-before-switch guard.
+pub fn scene_tasks(shared: &Shared) {
+    scene_run(shared);
 }
 
 /// A 60-turn transcript, for measuring scroll frames.

@@ -26,7 +26,7 @@ This app uses [pi](https://github.com/earendil-works/pi) as the main harness and
 2. [Jev](#the-classifier) reads it and picks a **role** (and a size: S, M or L). When it's less than 60% sure, you pick the role yourself with one key.
 3. The extension deals the next model from that role's shuffled **deck**, so every contender gets an even share of runs and you can't predict the next one. The session sticks to that model.
 4. While you work, pi's footer shows neither the role nor the model, only that `/done` ends the run.
-5. **End the run** with `/done`. It's the "end it all" button for the session:
+5. **End the run** with `/done` when its task is finished. This scores and seals only that session; other chats keep working:
    - One card, one score, from 5 to 1:
 
      | Score | Means | Logged as |
@@ -108,9 +108,9 @@ Edit `roles.json` to fit your accounts. `agents` maps pi model IDs (`provider/id
 
 ## Using it
 
-- One task per session: `/new` between tasks.
+- One task per session, not one task at a time. In the app, start another chat with ⌘N while other chats keep working. Return to any open chat to continue its task.
 - `/role <name>` forces a role before the first prompt. Once a run is dealt, `/role` only tells you the role after `/done`.
-- `/done` on every run. A run left open shows on the scoreboard as unrated.
+- `/done` on every run when you're finished with its task. Switching chats doesn't end or score a run; it stays open and shows on the scoreboard as unrated until you score it.
 - Switching models by hand with `/model` ends nothing, but `/done` then logs the run as 1, *failed*, for the dealt agent, without asking.
 - Don't open `/session` before `/done`, because it names the model.
 

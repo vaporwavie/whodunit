@@ -12,7 +12,7 @@ use rune_kit::{
 };
 use serde_json::json;
 
-use crate::core::{Core, DialogKind, Shared, cmd, lock, score_key};
+use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item};
 
 pub trait HasCore: 'static {
@@ -30,7 +30,7 @@ pub fn chip(label: impl Into<String>, k: &Kit) -> El {
     Badge::new(label).variant(BadgeVariant::Subtle).build(k)
 }
 
-/// The surface under the transcript: the composer, a dialog or the unrated guard, one at a time.
+/// The surface under the transcript: the composer or a dialog, one at a time.
 pub fn panel(k: &Kit, focused: bool) -> El {
     let c = &k.c;
     let border = if focused {
@@ -789,27 +789,6 @@ fn picks_on_cards(core: &Core, options: &[String]) -> bool {
         ),
         _ => None,
     }) == Some(true)
-}
-
-pub fn leave_guard<S: HasCore>(core: &Core, k: &Kit) -> Option<El> {
-    core.leave.as_ref()?;
-    let c = &k.c;
-    Some(
-        panel(k, false)
-            .key("leave-guard")
-            .gap(12.0)
-            .padding(16.0)
-            .child(text("This run hasn’t ended").font(k.ty.body_medium).color(c.text_base))
-            .child(text(format!("House rule 4: end every run with {}. A run left open shows on the scoreboard as unrated.", cmd("D"))).font(k.ty.small).color(c.text_muted).wrap())
-            .child(
-                row()
-                    .gap(8.0)
-                    .justify_end()
-                    .child(Button::new("Stay").variant(ButtonVariant::Ghost).shortcut("esc").show_shortcut().on_press(|s: &mut S| with_core(s, |core| core.answer_leave(None))).build(k))
-                    .child(Button::new("Leave unrated").variant(ButtonVariant::Outline).on_press(|s: &mut S| with_core(s, |core| core.answer_leave(Some(false)))).build(k))
-                    .child(Button::new("End it now").variant(ButtonVariant::Contrast).shortcut("⏎").show_shortcut().disabled(core.streaming).on_press(|s: &mut S| with_core(s, |core| core.answer_leave(Some(true)))).build(k).default_button()),
-            ),
-    )
 }
 
 pub fn toasts(core: &Core, k: &Kit) -> Option<El> {

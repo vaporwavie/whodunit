@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { draw, type Ending, SCORES, SWITCHED } from "./rules.ts";
+import { type Ending, SCORES, SWITCHED } from "./rules.ts";
+import { dealCard } from "./decks.ts";
 
 const PROVIDER = "whodunit";
 const MODEL_ID = "auto";
@@ -88,17 +89,6 @@ function shuffle<T>(items: readonly T[]): T[] {
 		[output[i], output[j]] = [output[j], output[i]];
 	}
 	return output;
-}
-
-function dealCard(role: string, contenders: string[]): string {
-	mkdirSync(DIR, { recursive: true });
-	const decks: Record<string, string[]> = existsSync(DECKS_PATH) ? JSON.parse(readFileSync(DECKS_PATH, "utf8")) : {};
-	const { card, rest } = draw(decks[role] ?? [], contenders, () => shuffle(contenders));
-	decks[role] = rest;
-	const tmp = `${DECKS_PATH}.${process.pid}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify(decks, null, 2)}\n`);
-	renameSync(tmp, DECKS_PATH);
-	return card;
 }
 
 function appendRun(record: Record<string, unknown>): void {
@@ -373,11 +363,11 @@ export default function (pi: ExtensionAPI) {
 		appendRun({ type: "deal", ...sessionRef(ctx), role: deal.role, agent: deal.agent, size: deal.size, source: deal.source, confidence: deal.confidence });
 	};
 
-	const cardDeal = (config: Config, classification: Classification): Deal => {
+	const cardDeal = async (config: Config, classification: Classification): Promise<Deal> => {
 		const role = config.roles[classification.role];
 		return {
 			role: classification.role,
-			agent: dealCard(classification.role, role.contenders),
+			agent: await dealCard(DECKS_PATH, classification.role, role.contenders, () => shuffle(role.contenders)),
 			effort: role.effort,
 			size: classification.size,
 			confidence: classification.confidence,
@@ -419,7 +409,7 @@ export default function (pi: ExtensionAPI) {
 			let deal = findEntry<Deal>(ctx, DEAL);
 			if (!deal && request.reason !== "direct") {
 				const classification = await pickClassification(ctx, config, lastUserText(request.messages));
-				deal = cardDeal(config, classification);
+				deal = await cardDeal(config, classification);
 				recordDeal(ctx, deal);
 			}
 			const agent = deal?.agent ?? "anthropic/claude-opus-5-5";
@@ -446,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 		const role = config.roles[classification.role];
 		const fanoutReady = role?.fanout && ctx.hasUI && role.contenders.length <= LABELS.length;
 		if (!fanoutReady) {
-			recordDeal(ctx, cardDeal(config, classification));
+			recordDeal(ctx, await cardDeal(config, classification));
 			setFooter(ctx, footerLabel(ctx));
 			return { action: "continue" };
 		}

@@ -20,7 +20,9 @@ use rune_kit::{
 };
 
 use crate::config;
-use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, cmd, lock, score_key};
+use crate::core::{
+    APP_COMMANDS, Core, DialogKind, Leave, SessionState, Shared, cmd, lock, score_key,
+};
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::transcript::Item;
@@ -85,7 +87,8 @@ pub struct FullUi {
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: u64,
-    seen_session: Option<String>,
+    seen_task: u64,
+    drafts: HashMap<u64, (TextEdit, TextEdit, u64, u64)>,
     editor_generation: u64,
     dialog_generation: u64,
 }
@@ -122,7 +125,8 @@ impl FullUi {
             reduced_motion: AtomicBool::new(false),
             slash_pick: (String::new(), 0),
             seen: 0,
-            seen_session: None,
+            seen_task: 0,
+            drafts: HashMap::new(),
             editor_generation: 0,
             dialog_generation: 0,
         }
@@ -168,15 +172,10 @@ fn submit(s: &mut FullUi, tx: &mut Tx, follow_up: bool) {
     tx.scroll_to_bottom("transcript");
 }
 
-/// Keys the dialogs, the unrated guard and the slash list take before the composer types them.
+/// Keys a dialog takes before the composer types them.
 pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
-    if core.leave.is_some() {
-        match ev.key {
-            Key::Enter => core.answer_leave(Some(true)),
-            Key::Escape => core.answer_leave(None),
-            _ => return false,
-        }
-        return true;
+    if ev.mods.cmd {
+        return false;
     }
     let Some(dialog) = core.dialog.as_ref() else {
         return false;
@@ -348,10 +347,25 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     let picker = s.picker.poll();
     let mut changed = core.version != s.seen || picker;
     s.seen = core.version;
-    let switched = core.session_file != s.seen_session;
+    let switched = core.task_id() != s.seen_task;
     if switched {
-        s.seen_session = core.session_file.clone();
+        let (composer, dialog_edit, editor_generation, dialog_generation) = s
+            .drafts
+            .remove(&core.task_id())
+            .unwrap_or_else(|| (TextEdit::new(""), TextEdit::new(""), 0, 0));
+        let previous = (
+            std::mem::replace(&mut s.composer, composer),
+            std::mem::replace(&mut s.dialog_edit, dialog_edit),
+            s.editor_generation,
+            s.dialog_generation,
+        );
+        s.drafts.insert(s.seen_task, previous);
+        s.seen_task = core.task_id();
+        s.composer.focused = true;
+        s.editor_generation = editor_generation;
+        s.dialog_generation = dialog_generation;
         s.diffs.clear();
+        changed = true;
     }
     if changed || switched {
         let built = parts::tool_diffs(&core, |id| s.diffs.contains_key(id));
@@ -396,7 +410,7 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     drop(core);
     if let Some((cwd, session)) = relaunch {
         let core = s.core.clone();
-        std::thread::spawn(move || crate::core::start_pi(&core, Some(cwd), Some(session)));
+        std::thread::spawn(move || crate::core::start_pi(&core, Some(cwd), session));
     }
     if switched {
         tx.scroll_to_bottom_instant("transcript");
@@ -417,9 +431,9 @@ fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
             s.page = Page::Chat;
             lock(&s.core).request_leave(Leave::Open(path.clone()));
         });
-    if current && core.streaming {
+    if core.session_state(summary) == SessionState::Working {
         r = r.status(RowStatus::Busy);
-    } else if summary.week.unrated() {
+    } else if core.tasks_waiting(summary) {
         r = r.status(RowStatus::Attention);
     }
     r.build(k)
@@ -427,8 +441,6 @@ fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
 }
 
 fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
-    let (unrated, recent): (Vec<&Summary>, Vec<&Summary>) =
-        core.sessions.iter().partition(|x| x.week.unrated());
     let mut sb = Sidebar::new()
         .label("Sessions")
         .inset(0.0)
@@ -457,17 +469,25 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 .build(k)
                 .key("scoreboard"),
         );
-    if !unrated.is_empty() {
-        sb = sb.section(
-            SidebarSection::new("Unrated")
-                .count(unrated.len())
-                .rows(unrated.iter().map(|x| session_row(s, core, x, k))),
-        );
-    }
-    if !recent.is_empty() {
-        sb = sb.section(
-            SidebarSection::new("Recent").rows(recent.iter().map(|x| session_row(s, core, x, k))),
-        );
+    for (state, label) in [
+        (SessionState::Working, "Working"),
+        (SessionState::Idle, "Idle"),
+        (SessionState::Ended, "Ended"),
+    ] {
+        let sessions: Vec<_> = core
+            .sessions
+            .iter()
+            .filter(|summary| core.session_state(summary) == state)
+            .collect();
+        if !sessions.is_empty() {
+            sb = sb.section(
+                SidebarSection::new(label).count(sessions.len()).rows(
+                    sessions
+                        .iter()
+                        .map(|summary| session_row(s, core, summary, k)),
+                ),
+            );
+        }
     }
     sb.build(k)
 }
@@ -690,12 +710,12 @@ fn empty_intro(k: &Kit) -> El {
         .px(14.0)
         .pb(6.0)
         .child(
-            text("One task per session")
+            text("One task per chat. As many chats as you need.")
                 .font(k.ty.body_medium)
                 .color(c.text_base),
         )
         .child(
-            text(format!("Describe the task below. The role and the agent stay hidden until you end the run with {}.", cmd("D")))
+            text(format!("Start another task with {} while this one works. End each run with {} to score it and reveal the role and agent.", cmd("N"), cmd("D")))
                 .font(k.ty.ui)
                 .color(c.text_muted)
                 .wrap(),
@@ -721,7 +741,7 @@ fn ended(k: &Kit) -> El {
                             .color(c.text_base),
                     )
                     .child(
-                        text("It’s scored and sealed. The next task starts in a new session.")
+                        text("This chat is scored and sealed. Start another task or return to an open chat.")
                             .font(k.ty.small)
                             .color(c.text_muted)
                             .wrap(),
@@ -774,10 +794,8 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     if let Some(toasts) = parts::toasts(core, k) {
         bottom = bottom.child(toasts);
     }
-    // A dialog or the guard takes the composer's place, so keys have one owner.
-    if let Some(guard) = parts::leave_guard::<FullUi>(core, k) {
-        bottom = bottom.child(guard);
-    } else if let Some(dialog) =
+    // A dialog takes the composer's place, so keys have one owner.
+    if let Some(dialog) =
         parts::dialog::<FullUi>(core, k, Some(&s.dialog_edit), |s: &mut FullUi| {
             &mut s.dialog_edit
         })

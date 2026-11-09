@@ -12,7 +12,6 @@ use whodunit::config::{self, AppConfig};
 use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_pi};
 use whodunit::transcript::{Block, END_TITLE, Item};
 use whodunit::ui::full::dialog_keys;
-use whodunit::ui::parts;
 
 fn wait_for(shared: &Shared, what: &str, seconds: u64, mut done: impl FnMut(&mut Core) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -100,12 +99,12 @@ impl Run {
         }
     }
 
-    /// Leaves for a new session through the unrated guard, ending the run with the score key `score`.
+    /// Scores the current chat explicitly, then starts another task.
     fn end_and_leave(&self, session: &str, score: &str) -> String {
         {
             let core = lock(&self.shared);
             assert!(
-                parts::role_line(&core).is_none(),
+                core.reveal().is_none(),
                 "the role stays hidden until the run ends"
             );
             let subtitle = core
@@ -115,16 +114,11 @@ impl Run {
                 .map(|s| s.subtitle())
                 .unwrap_or_default();
             assert!(
-                subtitle.is_empty(),
+                !subtitle.contains(" · "),
                 "the sidebar hides the role: {subtitle:?}"
             );
         }
-        lock(&self.shared).request_leave(Leave::New);
-        assert!(
-            lock(&self.shared).leave.is_some(),
-            "leaving an open run asks first"
-        );
-        lock(&self.shared).answer_leave(Some(true));
+        lock(&self.shared).end_run();
         press(&self.shared, END_TITLE, text_key(score));
         {
             let core = lock(&self.shared);
@@ -146,8 +140,14 @@ impl Run {
             );
         }
         press(&self.shared, END_TITLE, Key::Enter);
+        wait_for(&self.shared, "the scored session", 60, |core| {
+            core.t.week.done.is_some()
+        });
+        lock(&self.shared).request_leave(Leave::New);
+        let (cwd, target) = lock(&self.shared).relaunch.take().expect("new task");
+        start_pi(&self.shared, Some(cwd), target);
         wait_for(&self.shared, "the new session", 60, |core| {
-            core.session_file.as_deref() != Some(session) && core.t.items.is_empty()
+            core.ready && core.session_file.as_deref() != Some(session) && core.t.items.is_empty()
         });
         let log =
             std::fs::read_to_string(config::week_dir().join("runs.jsonl")).expect("runs.jsonl");

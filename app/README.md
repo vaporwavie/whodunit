@@ -2,9 +2,21 @@
 
 A macOS desktop frontend for the [whodunit](../README.md) pi extension, written in Rust on [rune](https://github.com/anomalyco/rune). It drives pi over RPC (`pi --mode rpc --model whodunit/auto`) and keeps the same ground rule: neither the role nor the model shows until the run ends.
 
-On top of plain pi it adds a sidebar of sessions, a guard against leaving a run open, a scoreboard page and a menu bar icon that reopens the window.
+On top of plain pi it adds parallel task chats, a sidebar of sessions, a scoreboard page and a menu bar icon that reopens the window.
 
-The sidebar lists runs from every folder, newest first, each under its folder's name (and its role, size and score once ended). Opening one from another folder restarts pi there. Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab; after that every thought shows in full, capped at twelve lines that scroll.
+## Multiple tasks
+
+One task belongs to one chat, but you can work on several tasks at once. ⌘N starts another chat without stopping the others or asking you to score them. Each live chat has its own pi process, folder, transcript, queue and dialogs. Switching back restores that chat, including any unsent draft. Chats in the same folder share files; use separate worktrees if the tasks need isolated edits.
+
+The sidebar lists chats from every folder in three groups:
+
+- **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too.
+- **Idle**: the chat is open but isn't working. It may be waiting for your reply, a role or fan-out pick, or a score. A dot marks chats waiting on a dialog. Saved open chats from earlier launches also appear here.
+- **Ended**: you've scored the run and sealed the chat.
+
+Each row shows its folder, with the role, size and score added only after the run ends. Opening a saved chat starts pi in that chat's folder; live chats keep their existing process. Changing folders starts a new chat and leaves other tasks running. Quit the app to stop all its pi processes; chats resume from their saved history, not mid-turn.
+
+Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab; after that every thought shows in full, capped at twelve lines that scroll.
 
 ## Install
 
@@ -26,7 +38,7 @@ Launched from Finder, the app runs your login shell once to find `pi` and your A
   <img alt="Ending a run: five scores on one card, 4 highlighted, End run waits for Enter" src="../docs/end-light.png">
 </picture>
 
-Leaving a session whose run hasn't ended (⌘N, or picking another session) asks first: **Stay**, **Leave unrated**, or **End it now** to score it on the spot.
+End each run when you're finished with its task, not when you switch chats. ⌘D scores only the selected chat. Switching away leaves an open run unrated until you return and score it; ending one chat doesn't affect the others.
 
 ## Fan-outs
 
@@ -51,13 +63,13 @@ On Linux, read ⌘ as Ctrl.
 | Key | Does |
 |---|---|
 | ⌘D | End the run |
-| ⌘N | New task |
+| ⌘N | New task in another chat; other chats keep working |
 | ⌘1 | Chat |
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |
 | ⌘⏎ | Queue a follow-up while the agent works |
 | Tab / ⏎ | In the `/` list: complete the command / run it (commands that need an argument are completed instead) |
-| Esc | Stop the agent |
+| Esc | Cancel the selected chat's dialog, or stop its agent |
 
 ## Command line
 

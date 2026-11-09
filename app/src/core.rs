@@ -1,5 +1,5 @@
-//! State both windows read: the pi process, the open session, dialogs and toasts.
-//! The reader thread applies pi records here and wakes the windows; views only read it.
+//! Shared app state and one independent pi process per live chat.
+//! Reader threads route records to their own task, even while another chat is selected.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,9 @@ use crate::config::{self, AppConfig};
 use crate::pi::{Pi, Spawn};
 use crate::sessions::{self, Summary};
 use crate::transcript::{END_TITLE, Item, Transcript, str_of};
+
+#[cfg(test)]
+mod tests;
 
 pub type Shared = Arc<Mutex<Core>>;
 
@@ -68,7 +71,7 @@ pub fn score_key(option: &str) -> Option<(&str, &str)> {
     Some((key, label))
 }
 
-/// What to do once the unrated-run guard is answered.
+/// Navigate without interrupting work in the current chat.
 #[derive(Clone, Debug)]
 pub enum Leave {
     New,
@@ -99,20 +102,15 @@ enum Pending {
     Entries,
     Stats,
     Commands,
-    Switch(Option<String>),
     Generic(&'static str),
 }
 
-pub struct Core {
-    pub config: AppConfig,
+#[derive(Default)]
+pub struct Task {
     pub cwd: PathBuf,
     pi: Option<Pi>,
     generation: u64,
-    next_id: u64,
     pending: HashMap<String, Pending>,
-    wakers: Vec<Arc<dyn Fn() + Send + Sync>>,
-    pub version: u64,
-
     pub t: Transcript,
     pub session_file: Option<String>,
     pub streaming: bool,
@@ -122,27 +120,73 @@ pub struct Core {
     pub queue: (Vec<String>, Vec<String>),
     pub stats: Stats,
     pub dialog: Option<Dialog>,
-    pub leave: Option<Leave>,
-    pub after_end: Option<Leave>,
     pub toasts: Vec<Toast>,
     pub statuses: BTreeMap<String, String>,
     pub widgets: BTreeMap<String, Vec<String>>,
     pub editor_text: Option<(u64, String)>,
     pub commands: Vec<Command>,
-    pub sessions: Vec<Summary>,
     pub exited: Option<String>,
     pub ready: bool,
-    /// A session in another folder to open: pi restarts there (`start_pi`), which the window runs.
-    pub relaunch: Option<(PathBuf, PathBuf)>,
+}
+
+impl Task {
+    pub fn working(&self) -> bool {
+        self.exited.is_none()
+            && self.t.week.done.is_none()
+            && self.dialog.is_none()
+            && (self.streaming
+                || self.pending_prompt.is_some()
+                || !self.widgets.is_empty()
+                || !self.statuses.is_empty()
+                || self.pending.values().any(|p| {
+                    matches!(
+                        p,
+                        Pending::Generic("prompt")
+                            | Pending::Generic("bash")
+                            | Pending::Generic("compact")
+                    )
+                }))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    Working,
+    Idle,
+    Ended,
+}
+
+pub struct Core {
+    pub config: AppConfig,
+    pub sessions: Vec<Summary>,
+    pub version: u64,
+    task: Task,
+    tasks: HashMap<u64, Task>,
+    next_generation: u64,
+    next_id: u64,
+    wakers: Vec<Arc<dyn Fn() + Send + Sync>>,
+    /// Navigation is serviced by the window without blocking its UI thread.
+    pub relaunch: Option<(PathBuf, Option<PathBuf>)>,
+}
+
+impl std::ops::Deref for Core {
+    type Target = Task;
+
+    fn deref(&self) -> &Task {
+        &self.task
+    }
+}
+
+impl std::ops::DerefMut for Core {
+    fn deref_mut(&mut self) -> &mut Task {
+        &mut self.task
+    }
 }
 
 const END_AFTER_TURN: &str = "End the run when the turn finishes. Esc stops it now.";
 
 pub const APP_COMMANDS: [(&str, &str); 5] = [
-    (
-        "new",
-        "Start a new task (house rule 2: one task per session)",
-    ),
+    ("new", "Start another task; other chats keep working"),
     ("compact", "Compact the context"),
     ("name", "Name this session: /name <title>"),
     ("export", "Export this session to HTML"),
@@ -153,31 +197,16 @@ impl Core {
     pub fn new(config: AppConfig, cwd: PathBuf) -> Core {
         Core {
             config,
-            cwd,
-            pi: None,
-            generation: 0,
+            task: Task {
+                cwd,
+                ..Task::default()
+            },
+            tasks: HashMap::new(),
+            next_generation: 0,
             next_id: 0,
-            pending: HashMap::new(),
             wakers: Vec::new(),
             version: 1,
-            t: Transcript::default(),
-            session_file: None,
-            streaming: false,
-            turn_started: None,
-            pending_prompt: None,
-            queue: (Vec::new(), Vec::new()),
-            stats: Stats::default(),
-            dialog: None,
-            leave: None,
-            after_end: None,
-            toasts: Vec::new(),
-            statuses: BTreeMap::new(),
-            widgets: BTreeMap::new(),
-            editor_text: None,
-            commands: Vec::new(),
             sessions: Vec::new(),
-            exited: None,
-            ready: false,
             relaunch: None,
         }
     }
@@ -221,12 +250,17 @@ impl Core {
         self.next_id += 1;
         let id = format!("app-{}", self.next_id);
         record["id"] = json!(id);
-        if let Some(pending) = pending {
-            self.pending.insert(id, pending);
-        }
         let sent = self.pi.as_ref().is_some_and(|pi| pi.send(&record));
-        if !sent {
-            self.toast("pi isn’t running. Restart it from the toolbar.", "error");
+        if sent {
+            if let Some(pending) = pending {
+                self.pending.insert(id, pending);
+            }
+        } else {
+            self.pending_prompt = None;
+            self.toast(
+                "pi isn’t running in this chat. Start a new task or reopen the app to resume it.",
+                "error",
+            );
         }
         sent
     }
@@ -235,24 +269,96 @@ impl Core {
     /// that hasn't been followed up yet is listed from memory.
     pub fn refresh_sessions(&mut self) {
         self.sessions = sessions::list(&config::sessions_root());
-        if let (Some(file), Some(title)) = (&self.session_file, self.t.title()) {
-            let path = PathBuf::from(file);
-            if self.t.week.deal.is_some()
-                && self.t.has_answer()
-                && !self.sessions.iter().any(|s| s.path == path)
-            {
-                self.sessions.insert(
-                    0,
-                    Summary {
-                        path,
-                        cwd: self.cwd.clone(),
-                        title,
-                        week: self.t.week.clone(),
-                    },
-                );
+        self.sync_live_sessions();
+        self.touch();
+    }
+
+    fn sync_live_sessions(&mut self) {
+        for task in self.tasks.values().chain(std::iter::once(&self.task)) {
+            let Some(file) = &task.session_file else {
+                continue;
+            };
+            let Some(title) = task.t.title().or_else(|| task.pending_prompt.clone()) else {
+                continue;
+            };
+            let summary = Summary {
+                path: PathBuf::from(file),
+                cwd: task.cwd.clone(),
+                title,
+                week: task.t.week.clone(),
+            };
+            if let Some(existing) = self.sessions.iter_mut().find(|s| s.path == summary.path) {
+                *existing = summary;
+            } else {
+                self.sessions.insert(0, summary);
             }
         }
-        self.touch();
+    }
+
+    pub fn task_id(&self) -> u64 {
+        self.task.generation
+    }
+
+    pub fn session_state(&self, summary: &Summary) -> SessionState {
+        let task = self
+            .tasks
+            .values()
+            .chain(std::iter::once(&self.task))
+            .find(|t| {
+                t.session_file
+                    .as_deref()
+                    .is_some_and(|file| Path::new(file) == summary.path)
+            });
+        let week = task.map_or(&summary.week, |t| &t.t.week);
+        if week.done.is_some() {
+            SessionState::Ended
+        } else if task.is_some_and(Task::working) {
+            SessionState::Working
+        } else {
+            SessionState::Idle
+        }
+    }
+
+    pub fn tasks_waiting(&self, summary: &Summary) -> bool {
+        self.tasks
+            .values()
+            .chain(std::iter::once(&self.task))
+            .any(|task| {
+                task.session_file
+                    .as_deref()
+                    .is_some_and(|file| Path::new(file) == summary.path)
+                    && task.dialog.is_some()
+            })
+    }
+
+    fn park_task(&mut self, task: Task) {
+        if task.generation != 0
+            && ((!task.ready && task.session_file.is_some())
+                || task.working()
+                || task.t.week.deal.is_some()
+                || !task.t.items.is_empty()
+                || task.t.title().is_some()
+                || task.dialog.is_some())
+        {
+            self.tasks.insert(task.generation, task);
+        }
+    }
+
+    /// Temporarily selects a task under the shared lock to reuse the same record handlers.
+    /// The visible task is restored before any window can read the state.
+    fn for_task(&mut self, generation: u64, f: impl FnOnce(&mut Core)) {
+        if self.generation == generation {
+            f(self);
+        } else if let Some(mut task) = self.tasks.remove(&generation) {
+            std::mem::swap(&mut self.task, &mut task);
+            let visible = task.generation;
+            self.tasks.insert(visible, task);
+            f(self);
+            let mut task = self.tasks.remove(&visible).expect("visible task");
+            std::mem::swap(&mut self.task, &mut task);
+            self.tasks.insert(generation, task);
+        }
+        self.sync_live_sessions();
     }
 
     pub fn has_unrated_answer(&self) -> bool {
@@ -261,10 +367,7 @@ impl Core {
 
     /// Ending opens once the turn has finished with an answer and nothing else is asking.
     pub fn can_end_run(&self) -> bool {
-        self.has_unrated_answer()
-            && !self.streaming
-            && self.dialog.is_none()
-            && self.leave.is_none()
+        self.has_unrated_answer() && !self.streaming && self.dialog.is_none()
     }
 
     pub fn reveal(&self) -> Option<String> {
@@ -356,10 +459,14 @@ impl Core {
             record["streamingBehavior"] = json!(if follow_up { "followUp" } else { "steer" });
         }
         self.send(record, Some(Pending::Generic("prompt")));
+        self.sync_live_sessions();
         self.touch();
     }
 
     pub fn end_run(&mut self) {
+        if self.dialog.is_some() || self.t.week.done.is_some() {
+            return;
+        }
         if self.t.week.deal.is_none() {
             self.toast("Nothing to end yet. Send the task first.", "info");
             return;
@@ -386,65 +493,25 @@ impl Core {
         self.send(json!({"type": "abort"}), Some(Pending::Generic("abort")));
     }
 
-    /// House rule 4: leaving a session whose run hasn't ended asks first.
     pub fn request_leave(&mut self, leave: Leave) {
-        if let Leave::Open(path) = &leave {
-            if self.session_file.as_deref() == Some(path.to_string_lossy().as_ref()) {
-                return;
-            }
-        }
-        if self.has_unrated_answer() {
-            self.leave = Some(leave);
-            self.touch();
-            return;
-        }
-        self.do_leave(leave);
-    }
-
-    pub fn answer_leave(&mut self, rate_first: Option<bool>) {
-        let Some(leave) = self.leave.take() else {
-            return;
-        };
-        match rate_first {
-            Some(true) if self.streaming => {
-                self.leave = Some(leave);
-                self.toast(END_AFTER_TURN, "info");
-            }
-            Some(true) => {
-                self.after_end = Some(leave);
-                self.end_run();
-            }
-            Some(false) => self.do_leave(leave),
-            None => {}
-        }
-        self.touch();
-    }
-
-    fn do_leave(&mut self, leave: Leave) {
         match leave {
             Leave::New => {
-                self.send(json!({"type": "new_session"}), Some(Pending::Switch(None)));
+                self.relaunch = Some((self.cwd.clone(), None));
+                self.touch();
             }
             Leave::Open(path) => {
                 let path = path.to_string_lossy().into_owned();
                 if self.session_file.as_deref() == Some(path.as_str()) {
                     return;
                 }
-                let elsewhere = self
+                let cwd = self
                     .sessions
                     .iter()
                     .find(|s| s.path.to_string_lossy() == path)
                     .map(|s| s.cwd.clone())
-                    .filter(|cwd| *cwd != self.cwd);
-                if let Some(cwd) = elsewhere {
-                    self.relaunch = Some((cwd, PathBuf::from(path)));
-                    self.touch();
-                    return;
-                }
-                self.send(
-                    json!({"type": "switch_session", "sessionPath": path.clone()}),
-                    Some(Pending::Switch(Some(path))),
-                );
+                    .unwrap_or_else(|| self.cwd.clone());
+                self.relaunch = Some((cwd, Some(PathBuf::from(path))));
+                self.touch();
             }
         }
     }
@@ -612,8 +679,8 @@ impl Core {
                     let had_deal = self.t.week.deal.is_some();
                     if str_of(entry, "customType") == crate::transcript::FANOUT_VIEW {
                         self.t.add_entry(entry);
-                        if let Some(Item::Fanout { prompt, .. }) = self.t.items.last_mut() {
-                            *prompt = self.pending_prompt.take();
+                        if let Some(Item::Fanout { prompt, .. }) = self.task.t.items.last_mut() {
+                            *prompt = self.task.pending_prompt.take();
                         }
                     } else {
                         self.t.add_entry(entry);
@@ -625,9 +692,6 @@ impl Core {
                     if !had_done && self.t.week.done.is_some() {
                         self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
                         self.refresh_sessions();
-                        if let Some(leave) = self.after_end.take() {
-                            self.do_leave(leave);
-                        }
                     }
                 }
             }
@@ -829,21 +893,6 @@ impl Core {
                     })
                     .collect();
             }
-            Pending::Switch(path) => {
-                if data
-                    .get("cancelled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    return;
-                }
-                self.t = Transcript::default();
-                self.stats = Stats::default();
-                self.pending_prompt = None;
-                self.queue = (Vec::new(), Vec::new());
-                self.session_file = path;
-                self.load_session();
-            }
             Pending::Generic("clear_queue") => {
                 let mut restored: Vec<String> = Vec::new();
                 for key in ["steering", "followUp"] {
@@ -891,40 +940,59 @@ impl Core {
     }
 }
 
-/// Starts (or restarts in another folder) the pi process behind `shared`, opening `session` if given.
+/// Selects an existing live chat, or starts an independent pi process for a new/resumed chat.
 pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>) {
     let login = crate::config::login_env();
-    let (spec_bin, cwd, generation) = {
-        let mut core = lock(shared);
-        if let Some(cwd) = cwd {
-            core.config.remember(&cwd);
-            core.config.save();
-            core.cwd = cwd;
-        }
-        core.pi = None;
-        core.generation += 1;
-        core.t = Transcript::default();
-        core.session_file = None;
-        core.streaming = false;
-        core.turn_started = None;
-        core.exited = None;
-        core.ready = false;
-        core.pending.clear();
-        core.dialog = None;
-        if !Path::new(&core.config.pi_bin).is_file()
-            && let Some(bin) = &login.pi_bin
+    let mut core = lock(shared);
+    if let Some(path) = &session {
+        if core
+            .session_file
+            .as_deref()
+            .is_some_and(|file| Path::new(file) == path)
         {
-            core.config.pi_bin = bin.clone();
-            core.config.save();
+            return;
         }
-        (
-            core.config.pi_bin.clone(),
-            core.cwd.clone(),
-            core.generation,
-        )
+        let live = core.tasks.iter().find_map(|(id, task)| {
+            task.session_file
+                .as_deref()
+                .filter(|file| Path::new(file) == path)
+                .map(|_| *id)
+        });
+        if let Some(id) = live {
+            let mut task = core.tasks.remove(&id).expect("live task");
+            std::mem::swap(&mut core.task, &mut task);
+            core.park_task(task);
+            core.touch();
+            let wakers = core.wakers();
+            drop(core);
+            wakers.iter().for_each(|wake| wake());
+            return;
+        }
+    }
+    let cwd = cwd.unwrap_or_else(|| core.cwd.clone());
+    core.config.remember(&cwd);
+    core.config.save();
+    core.next_generation += 1;
+    let generation = core.next_generation;
+    let task = Task {
+        cwd: cwd.clone(),
+        generation,
+        session_file: session
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        ..Task::default()
     };
-    let for_records = shared.clone();
-    let for_exit = shared.clone();
+    let previous = std::mem::replace(&mut core.task, task);
+    core.park_task(previous);
+    if !Path::new(&core.config.pi_bin).is_file()
+        && let Some(bin) = &login.pi_bin
+    {
+        core.config.pi_bin = bin.clone();
+        core.config.save();
+    }
+    let spec_bin = core.config.pi_bin.clone();
+    let for_records = Arc::downgrade(shared);
+    let for_exit = Arc::downgrade(shared);
     let session = session.map(|path| path.to_string_lossy().into_owned());
     let mut args = vec!["--model", "whodunit/auto"];
     if let Some(path) = &session {
@@ -938,33 +1006,36 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>)
             args: &args,
         },
         move |record| {
+            let Some(shared) = for_records.upgrade() else {
+                return;
+            };
             let wakers = {
-                let mut core = lock(&for_records);
-                if core.generation != generation {
-                    return;
-                }
-                core.apply(record);
-                core.wakers.clone()
+                let mut core = lock(&shared);
+                core.for_task(generation, |core| core.apply(record));
+                core.wakers()
             };
             wakers.iter().for_each(|wake| wake());
         },
         move |stderr| {
+            let Some(shared) = for_exit.upgrade() else {
+                return;
+            };
             let wakers = {
-                let mut core = lock(&for_exit);
-                if core.generation != generation {
-                    return;
-                }
-                core.pi = None;
-                core.streaming = false;
-                let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
-                core.exited = Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
-                core.touch();
-                core.wakers.clone()
+                let mut core = lock(&shared);
+                core.for_task(generation, |core| {
+                    core.pi = None;
+                    core.streaming = false;
+                    core.turn_started = None;
+                    core.pending_prompt = None;
+                    let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
+                    core.exited = Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+                    core.touch();
+                });
+                core.wakers()
             };
             wakers.iter().for_each(|wake| wake());
         },
     );
-    let mut core = lock(shared);
     match spawned {
         Ok(pi) => {
             core.pi = Some(pi);
@@ -973,7 +1044,10 @@ pub fn start_pi(shared: &Shared, cwd: Option<PathBuf>, session: Option<PathBuf>)
         }
         Err(error) => {
             core.exited = Some(format!("Couldn’t start {spec_bin}: {error}"));
-            core.touch();
         }
     }
+    core.touch();
+    let wakers = core.wakers();
+    drop(core);
+    wakers.iter().for_each(|wake| wake());
 }

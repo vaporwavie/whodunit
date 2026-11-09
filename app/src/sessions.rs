@@ -7,7 +7,9 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::transcript::{DEAL, DONE, FANOUT_PICK, SWITCH, Transcript, Week, content_text, str_of};
+use crate::transcript::{
+    DEAL, DONE, Deal, FANOUT_PICK, SWITCH, Transcript, Week, content_text, str_of,
+};
 
 #[derive(Clone, Debug)]
 pub struct Summary {
@@ -19,7 +21,15 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// The folder, then the role, size and score once the run has ended and they can show.
+    /// The deal, once the run has ended and its role and agent can show. The sidebar draws the
+    /// role as an icon and names both in its tooltip.
+    pub fn revealed(&self) -> Option<&Deal> {
+        self.week.done.as_ref()?;
+        self.week.deal.as_ref()
+    }
+
+    /// The folder, then the size and score once the run has ended and they can show; the role
+    /// shows as the row's icon instead.
     pub fn subtitle(&self) -> String {
         let folder = self
             .cwd
@@ -29,10 +39,7 @@ impl Summary {
         let (Some(deal), Some(done)) = (&self.week.deal, &self.week.done) else {
             return folder;
         };
-        format!(
-            "{folder} · {} · {} · {}/5",
-            deal.role, deal.size, done.score
-        )
+        format!("{folder} · {} · {}/5", deal.size, done.score)
     }
 }
 

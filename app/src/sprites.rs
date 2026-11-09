@@ -73,6 +73,9 @@ static ROLE_ICONS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/roles.json"), 1));
 static MODELS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 3));
+/// The same model art at one point per pixel, 12 points square: the sidebar's role tooltip.
+static MODEL_ICONS: LazyLock<HashMap<String, Art>> =
+    LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 1));
 static MODEL_ALIASES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../assets/sprites/model-aliases.json"))
         .expect("model aliases are checked in and valid")
@@ -92,9 +95,16 @@ pub fn role_icon(name: &str) -> &'static Art {
     pick(&ROLE_ICONS, name)
 }
 
+fn model_key(agent: &str) -> &'static str {
+    MODEL_ALIASES.get(agent).map_or("fallback", String::as_str)
+}
+
 pub fn model(agent: &str) -> &'static Art {
-    let key = MODEL_ALIASES.get(agent).map_or("fallback", String::as_str);
-    &MODELS[key]
+    &MODELS[model_key(agent)]
+}
+
+pub fn model_icon(agent: &str) -> &'static Art {
+    &MODEL_ICONS[model_key(agent)]
 }
 
 /// The deal source's icon (`jev`, `picker`, `forced`, `fallback`); unknown sources count as

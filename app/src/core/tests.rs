@@ -151,7 +151,11 @@ fn background_records_update_only_their_task_and_unknown_processes_are_ignored()
         .find(|s| s.path == Path::new("/background.jsonl"))
         .unwrap();
     assert_eq!(core.session_state(background), SessionState::Ended);
-    assert_eq!(background.subtitle(), "elsewhere · builder · M · 4/5");
+    assert_eq!(background.subtitle(), "elsewhere · M · 4/5");
+    assert_eq!(
+        background.revealed().map(|d| d.role.as_str()),
+        Some("builder")
+    );
 }
 
 #[test]

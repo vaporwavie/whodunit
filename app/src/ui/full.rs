@@ -1,6 +1,6 @@
 //! The default mode: an ordinary agent chat window (sessions, transcript, composer) under the week's rules.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -15,7 +15,8 @@ use rune_kit::shell::{
     SidebarToggle, SplitView, Toolbar,
 };
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle, popover,
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle,
+    Tooltip, popover,
 };
 
 use crate::config;
@@ -98,6 +99,8 @@ pub struct FullUi {
     pub viewing: Option<Shot>,
     pub sidebar: PaneState,
     ended_collapsed: bool,
+    /// The tooltip of the sidebar icon the pointer rests on, by its key.
+    sprite_tip: Option<String>,
     pub page: Page,
     pub board: Option<Board>,
     /// When the open board's decider fills start rising; None once they have, or for a board
@@ -167,6 +170,7 @@ impl FullUi {
             viewing: None,
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             ended_collapsed: true,
+            sprite_tip: None,
             page: Page::Chat,
             board: None,
             board_rise_at: None,
@@ -583,27 +587,111 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     changed || shore
 }
 
-fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
+/// One session in the sidebar; `names` are the agents' display names, read once per sidebar.
+fn session_row(
+    s: &FullUi,
+    core: &Core,
+    summary: &Summary,
+    names: &BTreeMap<String, String>,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> El {
     let current = core.session_file.as_deref() == Some(summary.path.to_string_lossy().as_ref());
     let path = summary.path.clone();
     let mut r = SidebarRow::new(summary.title.clone())
         .subtitle(summary.subtitle())
         .selected(current && s.page == Page::Chat)
         .on_select(move |s: &mut FullUi, tx| s.leave(Leave::Open(path.clone()), tx));
-    // The role's sprite, only once the run has ended and the role can show.
-    if let (Some(deal), Some(_)) = (&summary.week.deal, &summary.week.done) {
-        r = r.avatar(sprite(sprites::role_icon(&deal.role)));
+    // The role's and the agent's sprites, only once the run has ended and they can show.
+    // The role's sits in the title's line, so it drops to centre on both lines.
+    let deal = summary.revealed();
+    if let Some(deal) = deal {
+        let file = summary.path.display();
+        let role = sprite_tip(
+            s,
+            format!("role-{file}"),
+            sprites::role_icon(&deal.role),
+            deal.role.clone(),
+            k,
+            layer,
+        );
+        let agent = sprite_tip(
+            s,
+            format!("agent-{file}"),
+            sprites::model_icon(&deal.agent),
+            config::agent_name_in(names, &deal.agent),
+            k,
+            layer,
+        );
+        r = r.avatar(role.offset(0.0, ROLE_ICON_DROP)).trailing(agent);
     }
     if core.session_state(summary) == SessionState::Working {
         r = r.status(RowStatus::Busy);
     } else if core.tasks_waiting(summary) {
         r = r.status(RowStatus::Attention);
     }
-    r.build(k)
-        .key(format!("session-{}", summary.path.display()))
+    let mut r = r.build(k);
+    if let Some(deal) = deal {
+        r = r.label(format!(
+            "{}, {}, {}, {}",
+            summary.title,
+            deal.role,
+            config::agent_name_in(names, &deal.agent),
+            summary.subtitle()
+        ));
+    }
+    r.key(format!("session-{}", summary.path.display()))
 }
 
-fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
+/// Half the subtitle's line: the row puts its icon in the title's line, and the role icon
+/// drops by this to centre on both lines.
+const ROLE_ICON_DROP: f32 = 8.0;
+const SPRITE_TIP_DELAY: Duration = Duration::from_millis(500);
+
+/// A sidebar sprite that names itself in a tooltip while the pointer rests on it. `key` names
+/// the tooltip; the sprite itself is keyed `{key}-icon`.
+fn sprite_tip(
+    s: &FullUi,
+    key: String,
+    art: &sprites::Art,
+    name: String,
+    k: &Kit,
+    layer: &mut Vec<El>,
+) -> El {
+    let id = key.clone();
+    let icon = sprite(art)
+        .key(format!("{key}-icon"))
+        .hover_delays(SPRITE_TIP_DELAY, Duration::ZERO)
+        .on_hover_change(move |s: &mut FullUi, inside, _| {
+            if inside {
+                s.sprite_tip = Some(id.clone());
+            } else if s.sprite_tip.as_ref() == Some(&id) {
+                s.sprite_tip = None;
+            }
+        });
+    let open = s.sprite_tip.as_ref() == Some(&key);
+    Tooltip::new(key)
+        .trigger(icon)
+        .text(k, name)
+        .open(open)
+        .build(k, layer)
+}
+
+fn sidebar(s: &FullUi, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
+    // Only ended rows name their agent, so the file is read only while some show.
+    let shown = |summary: &&Summary| {
+        !s.ended_collapsed || core.session_state(summary) != SessionState::Ended
+    };
+    let names = if core
+        .sessions
+        .iter()
+        .filter(shown)
+        .any(|summary| summary.revealed().is_some())
+    {
+        config::agent_names()
+    } else {
+        BTreeMap::new()
+    };
     let mut sb = Sidebar::new()
         .label("Sessions")
         .inset(0.0)
@@ -676,7 +764,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                         .children(
                             sessions
                                 .iter()
-                                .map(|summary| session_row(s, core, summary, k)),
+                                .map(|summary| session_row(s, core, summary, &names, k, layer)),
                         ),
                 );
             }
@@ -686,7 +774,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
                 SidebarSection::new(label).count(sessions.len()).rows(
                     sessions
                         .iter()
-                        .map(|summary| session_row(s, core, summary, k)),
+                        .map(|summary| session_row(s, core, summary, &names, k, layer)),
                 ),
             );
         }
@@ -1750,13 +1838,11 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         _ => chat(s, &core, k, cx.system_dark()),
     };
     let mut overlays = Vec::new();
+    let side = sidebar(s, &core, k, &mut overlays);
     folder_picker::build(s, k, &mut overlays);
     viewer(s, k, &mut overlays);
-    let mut window = SplitView::new(main).sidebar(
-        &s.sidebar,
-        |s: &mut FullUi| &mut s.sidebar,
-        sidebar(s, &core, k),
-    );
+    let mut window =
+        SplitView::new(main).sidebar(&s.sidebar, |s: &mut FullUi| &mut s.sidebar, side);
     if s.sidebar.width() - cx.titlebar_inset() >= WORDMARK_ROOM {
         window = window.sidebar_title(wordmark(k, cx.titlebar_inset() > 0.0));
     }
@@ -2101,6 +2187,59 @@ mod tests {
         rt.frame(1.0);
         assert!(ended.iter().all(|path| !shows(&rt, path)));
         assert!(shows(&rt, "/Ended/section-header"));
+    }
+
+    #[test]
+    fn an_ended_row_shows_its_role_and_agent_icons_named_on_hover() {
+        let core = core(crate::fixtures::scene_tasks);
+        let (path, role, agent) = {
+            let core = lock(&core);
+            let ended = core
+                .sessions
+                .iter()
+                .find(|summary| core.session_state(summary) == SessionState::Ended)
+                .unwrap();
+            let deal = ended.revealed().unwrap();
+            (
+                ended.path.clone(),
+                deal.role.clone(),
+                config::agent_name(&deal.agent),
+            )
+        };
+        let mut rt = window(core);
+        click(&mut rt, "Ended/section-header");
+        rt.frame(1.0);
+        let find = |rt: &Runtime<FullUi>, tail: &str| {
+            rt.elements().into_iter().find(|e| e.path.ends_with(tail))
+        };
+        let file = path.display();
+        let lines = find(&rt, &format!("/session-{file}/lines")).unwrap();
+        let role_icon = find(&rt, &format!("/role-{file}-icon")).unwrap();
+        let agent_icon = find(&rt, &format!("/agent-{file}-icon")).unwrap();
+        // Both centre on the row's two lines, the role's ahead of them and the agent's after.
+        let centre = |r: [f32; 4]| r[1] + r[3] / 2.0;
+        assert!((centre(role_icon.rect) - centre(lines.rect)).abs() < 0.5);
+        assert!((centre(agent_icon.rect) - centre(lines.rect)).abs() < 0.5);
+        assert!(role_icon.rect[0] + role_icon.rect[2] <= lines.rect[0] + 22.0);
+        assert!(agent_icon.rect[0] >= lines.rect[0] + lines.rect[2]);
+
+        for (icon, tip, name) in [
+            (role_icon, format!("/role-{file}-tooltip"), &role),
+            (agent_icon, format!("/agent-{file}-tooltip"), &agent),
+        ] {
+            let r = icon.rect;
+            rt.pointer_move(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+            rt.frame(0.016);
+            assert!(find(&rt, &tip).is_none(), "not before the delay");
+            rt.frame(SPRITE_TIP_DELAY.as_secs_f64() + 0.1);
+            rt.frame(1.0);
+            let shown = find(&rt, &tip).expect("the tooltip opens");
+            assert_eq!(shown.label.as_deref(), Some(name.as_str()));
+            rt.pointer_move(600.0, 400.0);
+            rt.frame(0.016);
+            rt.frame(1.0);
+            assert!(find(&rt, &tip).is_none(), "leaving closes it");
+        }
     }
 
     #[test]

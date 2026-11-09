@@ -206,7 +206,11 @@ pub fn agent_names() -> BTreeMap<String, String> {
 }
 
 pub fn agent_name(agent: &str) -> String {
-    let names = agent_names();
+    agent_name_in(&agent_names(), agent)
+}
+
+/// [`agent_name`] from names already read, for views that name many agents at once.
+pub fn agent_name_in(names: &BTreeMap<String, String>, agent: &str) -> String {
     let Some(name) = names.get(agent) else {
         return agent.rsplit('/').next().unwrap_or(agent).to_owned();
     };

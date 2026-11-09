@@ -41,14 +41,14 @@ Launched from Finder, the app runs your login shell once to find `pi` and your A
 
 ## Ending a run
 
-⌘D or the **End run** button opens the score card. A digit from 5 to 1 only highlights a row, and ⏎ commits, because ending can't be undone. Esc goes back to working. Once ended, the composer gives way to a **New task** button (⌘N).
+⌘⏎ or **I am done** below the composer opens the confirmation card. Both prompts ask **Call it done?** and keep the score blind: press 5 to 1 to highlight a score, then ⏎ or **I am done** to confirm. **Keep working** or Esc cancels without ending the run.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../docs/end-dark.png">
-  <img alt="Ending a run: five scores on one card, 4 highlighted, End run waits for Enter" src="../docs/end-light.png">
+  <img alt="Ending a run: five scores on one card, 4 highlighted, confirmation waits for Enter" src="../docs/end-light.png">
 </picture>
 
-End each run when you're finished with its task, not when you switch chats. ⌘D scores only the selected chat. Switching away leaves an open run unrated until you return and score it; ending one chat doesn't affect the others.
+End each run when you're finished with its task, not when you switch chats. ⌘⏎ scores only the selected chat. Switching away leaves an open run unrated until you return and score it; ending one chat doesn't affect the others.
 
 ## Fan-outs
 
@@ -72,13 +72,13 @@ On Linux, read ⌘ as Ctrl.
 
 | Key | Does |
 |---|---|
-| ⌘D | End the run |
+| ⌘⏎ | Open the end-run confirmation and score card |
 | ⌘N | New task in another chat; other chats keep working |
 | ⌘1 | Chat |
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |
 | ⌘I | Focus the composer (or the open dialog's field) |
-| ⌘⏎ | Queue a follow-up while the agent works |
+| ⌘⇧⏎ | Queue a follow-up while the agent works |
 | ⌘V | Paste text, or attach a copied image or image files |
 | ⌫ | In an empty composer: remove the last attached image |
 | Tab / ⏎ | In the `/` list: complete the command / run it (commands that need an argument are completed instead) |

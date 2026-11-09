@@ -327,8 +327,12 @@ fn composer_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
             lock(&s.core).abort();
             true
         }
-        Key::Enter if ev.mods.cmd => {
+        Key::Enter if ev.mods.cmd && ev.mods.shift => {
             submit(s, tx, true);
+            true
+        }
+        Key::Enter if ev.mods.cmd => {
+            request_end(s, tx);
             true
         }
         Key::Enter if ev.mods.shift => false,
@@ -459,8 +463,8 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.composer.focused = true;
         return true;
     }
-    if ev.is_command('d') {
-        lock(&s.core).end_run();
+    if ev.key == Key::Enter && ev.mods.cmd && !ev.mods.shift {
+        request_end(s, tx);
         return true;
     }
     if ev.is_command('o') {
@@ -484,6 +488,11 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     false
+}
+
+fn request_end(s: &mut FullUi, tx: &mut Tx) {
+    s.show(Page::Chat, tx);
+    lock(&s.core).end_run();
 }
 
 /// ⌘I: back to the chat with the keyboard in its composer, or in the field of the dialog that
@@ -956,7 +965,7 @@ fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
     let button = if core.streaming {
         button
             .label("Steer")
-            .help(format!("Steer  ⏎ · Queue  {}", cmd("⏎")))
+            .help(format!("Steer  ⏎ · Queue  {}", cmd("⇧⏎")))
     } else {
         button.label("Send").shortcut("⏎")
     };
@@ -1125,7 +1134,7 @@ fn empty_intro(k: &Kit) -> El {
                 .color(c.text_base),
         )
         .child(
-            text(format!("Start another task with {} while this one works. End each run with {} to score it and reveal the role and agent.", cmd("N"), cmd("D")))
+            text(format!("Start another task with {} while this one works. End each run with {} to score it and reveal the role and agent.", cmd("N"), cmd("⏎")))
                 .font(k.ty.ui)
                 .color(c.text_muted)
                 .wrap(),
@@ -1146,7 +1155,7 @@ fn ended(k: &Kit) -> El {
                     .shrink()
                     .min_w(0.0)
                     .child(
-                        text("This run has ended")
+                        text("Done & dusted.")
                             .font(k.ty.body_medium)
                             .color(c.text_base),
                     )
@@ -1215,6 +1224,33 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
         bottom = bottom.child(ended(k));
     } else {
         bottom = bottom.child(composer(s, core, k));
+        if core.can_end_run() {
+            bottom = bottom.child(
+                row()
+                    .key("finish-run")
+                    .w_full()
+                    .center_y()
+                    .gap(12.0)
+                    .pl(14.0)
+                    .child(
+                        text("Call it done?")
+                            .font(k.ty.ui)
+                            .color(k.c.text_muted)
+                            .grow(1.0)
+                            .shrink(),
+                    )
+                    .child(
+                        Button::new("I am done")
+                            .variant(ButtonVariant::Contrast)
+                            .control_size(ControlSize::Large)
+                            .shortcut(cmd("⏎"))
+                            .show_shortcut()
+                            .on_press_tx(request_end)
+                            .build(k)
+                            .key("end-run"),
+                    ),
+            );
+        }
     }
     let mut stage = col().w_full().h_full().min_h(0.0).clip_rounded(0.0);
     // Images dropped anywhere on an open chat go to its composer.
@@ -1253,24 +1289,6 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
             .unwrap_or_else(|| "New task".to_owned()),
     };
     let title = title.lines().next().unwrap_or_default().to_owned();
-    let mut trailing = row().gap(12.0).center_y();
-    if page == Page::Chat && core.t.week.unrated() {
-        trailing = trailing.child(
-            Button::new("End run")
-                .variant(if core.can_end_run() {
-                    ButtonVariant::Contrast
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .disabled(!core.can_end_run())
-                .control_size(ControlSize::Small)
-                .shortcut(cmd("D"))
-                .show_shortcut()
-                .on_press(|s: &mut FullUi| lock(&s.core).end_run())
-                .build(k)
-                .key("end-run"),
-        );
-    }
     let title = text(title)
         .key("title")
         .font(k.ty.ui_medium)
@@ -1278,7 +1296,7 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
         .truncate()
         .shrink()
         .min_w(0.0);
-    Toolbar::new().leading(title).trailing(trailing)
+    Toolbar::new().leading(title)
 }
 
 fn scoreboard_empty(k: &Kit) -> El {
@@ -1290,7 +1308,7 @@ fn scoreboard_empty(k: &Kit) -> El {
         .pt(100.0)
         .items_center()
         .child(text("No rated runs yet").font(k.ty.body_medium).color(c.text_base))
-        .child(text(format!("Finish a task and end it with {}. Each role gets a table here, and an agent needs {} runs to rank.", cmd("D"), scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
+        .child(text(format!("Finish a task and end it with {}. Each role gets a table here, and an agent needs {} runs to rank.", cmd("⏎"), scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
         .child(
             row().pt(8.0).child(
                 Button::new("Start a task")
@@ -2300,6 +2318,132 @@ mod tests {
         ];
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
+    }
+
+    #[test]
+    fn ending_lives_below_the_composer_and_command_return_never_sends_the_draft() {
+        let core = core(crate::fixtures::scene_chat);
+        let mut rt = window(core.clone());
+        let elements = rt.elements();
+        let rect = |key: &str| {
+            elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .unwrap()
+                .rect
+        };
+        let composer = rect("composer-frame");
+        assert!(rect("end-run")[1] >= composer[1] + composer[3]);
+        rt.update(|s, _| s.composer.replace_text("An unsent draft"));
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods {
+                cmd: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.016);
+        assert_eq!(rt.state.composer.text, "An unsent draft");
+        let core = lock(&core);
+        let sent = core.sent_before_start();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["message"], "/done");
+        assert!(core.t.week.done.is_none());
+        assert!(core.reveal().is_none());
+    }
+
+    #[test]
+    fn command_shift_return_still_queues_followups() {
+        let core = core(crate::fixtures::scene_working);
+        let mut rt = window(core.clone());
+        rt.update(|s, _| s.composer.replace_text("Next, run the tests"));
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods {
+                cmd: true,
+                shift: true,
+                ..Mods::default()
+            },
+        });
+        rt.frame(0.016);
+        let core = lock(&core);
+        let sent = core.sent_before_start();
+        let last = sent.last().unwrap();
+        assert_eq!(last["message"], "Next, run the tests");
+        assert_eq!(last["streamingBehavior"], "followUp");
+    }
+
+    #[test]
+    fn ending_requires_a_score_and_explicit_confirmation_and_can_be_cancelled() {
+        let core = core(crate::fixtures::scene_end);
+        lock(&core).dialog.as_mut().unwrap().highlight = None;
+        let mut rt = window(core.clone());
+        assert!(shows(&rt, "/confirm-end"));
+        assert!(shows(&rt, "/keep-working"));
+        rt.key(Key::Enter.into());
+        rt.frame(0.016);
+        assert!(
+            lock(&core).dialog.is_some(),
+            "Enter without a score does nothing"
+        );
+        rt.key(Key::Text("4".into()).into());
+        rt.frame(0.016);
+        assert_eq!(lock(&core).dialog.as_ref().unwrap().highlight, Some(1));
+        assert!(lock(&core).t.week.done.is_none());
+        assert!(lock(&core).reveal().is_none());
+        click(&mut rt, "keep-working");
+        assert!(lock(&core).dialog.is_none());
+        assert!(lock(&core).t.week.done.is_none());
+        assert!(shows(&rt, "/composer-frame"));
+        crate::fixtures::scene_end(&core);
+        rt.frame(0.016);
+        click(&mut rt, "confirm-end");
+        assert!(lock(&core).dialog.is_none());
+        assert!(
+            lock(&core).t.week.done.is_none(),
+            "wait for pi's done entry"
+        );
+        {
+            let mut core = lock(&core);
+            core.t.week.done = Some(crate::transcript::Done { score: 4 });
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert!(shows(&rt, "/ended"));
+        assert!(lock(&core).reveal().is_some());
+    }
+
+    #[test]
+    fn end_confirmation_fits_the_smallest_window() {
+        for dark in [false, true] {
+            let mut rt = Runtime::new(
+                FullUi::new(core(crate::fixtures::scene_end)),
+                view,
+                (720.0, 480.0),
+                Env::new(dark, 1.0),
+            );
+            rt.poll = Some(poll);
+            rt.frame(0.0);
+            rt.frame(1.0);
+            let elements = rt.elements();
+            let rect = |key: &str| {
+                elements
+                    .iter()
+                    .find(|e| e.key.as_deref() == Some(key))
+                    .unwrap()
+                    .rect
+            };
+            for key in ["dialog", "confirm-end", "keep-working"] {
+                let [x, y, w, h] = rect(key);
+                assert!(
+                    x >= 0.0 && y >= 0.0 && x + w <= 720.0 && y + h <= 480.0,
+                    "{key}: {x}, {y}, {w}, {h}"
+                );
+            }
+            let yes = rect("confirm-end");
+            let no = rect("keep-working");
+            assert!(no[0] + no[2] <= yes[0]);
+        }
     }
 
     #[test]

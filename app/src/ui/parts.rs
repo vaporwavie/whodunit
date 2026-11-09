@@ -769,10 +769,14 @@ pub fn dialog<S: HasCore>(
     }
     let mut card = panel(k, false).key("dialog").gap(12.0).padding(16.0);
     card = card.child(
-        text(dialog.title.clone())
-            .font(k.ty.body_medium)
-            .color(c.text_base)
-            .wrap(),
+        text(if dialog.ends_run() {
+            "Call it done?".to_owned()
+        } else {
+            dialog.title.clone()
+        })
+        .font(k.ty.body_medium)
+        .color(c.text_base)
+        .wrap(),
     );
     match &dialog.kind {
         DialogKind::Select(options) => {
@@ -820,31 +824,49 @@ pub fn dialog<S: HasCore>(
                     });
                 list = list.child(if keycaps { item } else { item.w_full() });
             }
-            card = card.child(list);
             if ends_run {
                 card = card.child(
-                    row()
-                        .w_full()
-                        .gap(8.0)
-                        .center_y()
-                        .child(
-                            text("Press 5–1, then ⏎ seals the session and reveals the agent · esc keeps working")
-                                .font(k.ty.small)
-                                .color(c.text_muted)
-                                .wrap()
-                                .shrink(),
-                        )
-                        .child(spacer())
-                        .child(
-                            Button::new("End run")
-                                .variant(ButtonVariant::Contrast)
-                                .shortcut("⏎")
-                                .show_shortcut()
-                                .disabled(dialog.highlight.is_none())
-                                .on_press(|s: &mut S| with_core(s, |core| core.commit()))
-                                .build(k),
-                        ),
+                    text("Score the work before the reveal. Ending seals this chat; you can’t send more prompts.")
+                        .font(k.ty.ui)
+                        .color(c.text_muted)
+                        .wrap(),
                 );
+            }
+            card = card.child(list);
+            if ends_run {
+                card = card
+                    .child(
+                        text("5–1 to score · ⏎ to confirm")
+                            .font(k.ty.small)
+                            .color(c.text_muted),
+                    )
+                    .child(
+                        row()
+                            .w_full()
+                            .gap(8.0)
+                            .justify_end()
+                            .child(
+                                Button::new("Keep working")
+                                    .variant(ButtonVariant::Ghost)
+                                    .shortcut("esc")
+                                    .show_shortcut()
+                                    .on_press(|s: &mut S| {
+                                        with_core(s, |core| core.answer_dialog(None))
+                                    })
+                                    .build(k)
+                                    .key("keep-working"),
+                            )
+                            .child(
+                                Button::new("I am done")
+                                    .variant(ButtonVariant::Contrast)
+                                    .shortcut("⏎")
+                                    .show_shortcut()
+                                    .disabled(dialog.highlight.is_none())
+                                    .on_press(|s: &mut S| with_core(s, |core| core.commit()))
+                                    .build(k)
+                                    .key("confirm-end"),
+                            ),
+                    );
             } else {
                 card = card.child(
                     text("Number keys or ↑↓ ⏎ to choose · esc to cancel")

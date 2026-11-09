@@ -68,7 +68,7 @@ for line in sys.stdin:
     elif kind == 'get_commands':
         response(command, {'commands': []})
     elif kind == 'get_session_stats':
-        response(command, {'cost': float(os.getpid()), 'contextUsage': {'percent': 12}})
+        response(command, {'cost': float(os.getpid()), 'contextUsage': {'tokens': 30000, 'contextWindow': 272000, 'percent': 11}})
     elif kind == 'prompt':
         if command['message'] == '/done':
             emit({'type': 'extension_ui_request', 'id': 'score', 'method': 'select', 'title': 'End this run', 'options': ['5 · nailed it, great']})
@@ -76,7 +76,10 @@ for line in sys.stdin:
         else:
             busy = True
             aborted.clear()
-            message = {'role': 'user', 'content': command['message']}
+            content = command['message']
+            if command.get('images'):
+                content = [{'type': 'text', 'text': content}, *command['images']]
+            message = {'role': 'user', 'content': content}
             append({'type': 'message', 'message': message})
             emit({'type': 'message_start', 'message': message})
             entry = {'type': 'custom', 'customType': 'whodunit.deal', 'data': {'role': 'builder', 'size': 'M', 'agent': 'secret-lab/secret-model'}}

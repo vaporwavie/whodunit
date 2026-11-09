@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::config::{self, AppConfig};
 use crate::pi::{Pi, Spawn};
 use crate::sessions::{self, Summary};
-use crate::transcript::{END_TITLE, Item, Transcript, str_of};
+use crate::transcript::{END_TITLE, Item, Shot, Transcript, str_of};
 
 #[cfg(test)]
 mod tests;
@@ -90,7 +90,29 @@ pub struct Toast {
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub cost: f64,
-    pub context_percent: Option<f64>,
+    /// Tokens in the context pi sends, counted as pi counts them for compaction.
+    pub context_tokens: Option<f64>,
+    pub context_window: Option<f64>,
+    /// `context_tokens` is the last compaction's estimate of what it left. pi has no count of
+    /// its own until a response after the compaction reports usage.
+    pub predicted: bool,
+    /// The free tokens below which pi compacts on its own; `None` with auto-compaction off.
+    pub reserve: Option<f64>,
+}
+
+impl Stats {
+    /// Context used, in percent of where pi compacts on its own, so 100% is the next compaction.
+    /// With auto-compaction off, in percent of the whole window.
+    pub fn context_percent(&self) -> Option<f64> {
+        let tokens = self.context_tokens?;
+        let window = self.context_window.filter(|w| *w > 0.0)?;
+        let limit = self
+            .reserve
+            .map(|reserve| window - reserve)
+            .filter(|limit| *limit > 0.0)
+            .unwrap_or(window);
+        Some(tokens / limit * 100.0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -120,7 +142,10 @@ pub struct Task {
     pub streaming: bool,
     /// When the agent started its current turn, for the working timer.
     pub turn_started: Option<Instant>,
+    /// The first prompt stays visible through the deal until its message or fan-out arrives.
     pub pending_prompt: Option<String>,
+    /// The images sent with `pending_prompt`, shown with it until pi echoes the message.
+    pub pending_shots: Vec<Shot>,
     pub queue: (Vec<String>, Vec<String>),
     pub stats: Stats,
     pub dialog: Option<Dialog>,
@@ -136,6 +161,12 @@ pub struct Task {
 }
 
 impl Task {
+    /// Records waiting for the chat's process to start, for tests that never start one.
+    #[cfg(test)]
+    pub(crate) fn sent_before_start(&self) -> &[Value] {
+        &self.outbox
+    }
+
     pub fn working(&self) -> bool {
         self.exited.is_none()
             && self.t.week.done.is_none()
@@ -391,16 +422,23 @@ impl Core {
     // Commands the views call.
 
     pub fn submit(&mut self, text: &str, follow_up: bool) {
+        self.submit_with(text, follow_up, &[]);
+    }
+
+    /// `submit` with images attached. Returns whether they went out with a prompt: slash and
+    /// shell commands don't take images, and a refused prompt sends nothing, so the composer
+    /// keeps them for the next try.
+    pub fn submit_with(&mut self, text: &str, follow_up: bool, shots: &[Shot]) -> bool {
         let text = text.trim_end();
-        if text.trim().is_empty() {
-            return;
+        if text.trim().is_empty() && shots.is_empty() {
+            return false;
         }
         if self.t.week.done.is_some() && !text.starts_with('/') {
             self.toast(
                 format!("This run has ended. {} for the next task.", cmd("N")),
                 "info",
             );
-            return;
+            return false;
         }
         if let Some(command) = text.strip_prefix('!') {
             let exclude = command.starts_with('!');
@@ -416,15 +454,18 @@ impl Core {
                 Some(Pending::Generic("bash")),
             );
             self.touch();
-            return;
+            return false;
         }
         if let Some(rest) = text.strip_prefix('/') {
             let (name, args) = rest.split_once(' ').unwrap_or((rest, ""));
             match name {
-                "new" => return self.request_leave(Leave::New),
+                "new" => {
+                    self.request_leave(Leave::New);
+                    return false;
+                }
                 "done" if self.streaming => {
                     self.toast(END_AFTER_TURN, "info");
-                    return;
+                    return false;
                 }
                 "compact" => {
                     let mut record = json!({"type": "compact"});
@@ -432,25 +473,25 @@ impl Core {
                         record["customInstructions"] = json!(args.trim());
                     }
                     self.send(record, Some(Pending::Generic("compact")));
-                    return;
+                    return false;
                 }
                 "name" => {
                     self.send(
                         json!({"type": "set_session_name", "name": args.trim()}),
                         Some(Pending::Generic("name")),
                     );
-                    return;
+                    return false;
                 }
                 "export" => {
                     self.send(
                         json!({"type": "export_html"}),
                         Some(Pending::Generic("export_html")),
                     );
-                    return;
+                    return false;
                 }
                 "model" | "models" | "scoped-models" => {
                     self.toast("No model switching this week. House rule 3: a switch counts the run as failed.", "warning");
-                    return;
+                    return false;
                 }
                 _ => {}
             }
@@ -460,19 +501,26 @@ impl Core {
                 "Still dealing an agent. Send this after the first answer.",
                 "info",
             );
-            return;
+            return false;
         }
+        // An extension command such as `/done` ignores images; they stay in the composer.
+        let shots = if text.starts_with('/') { &[] } else { shots };
         let first = self.t.week.deal.is_none() && !self.t.has_answer() && !text.starts_with('/');
         if first {
             self.pending_prompt = Some(text.to_owned());
+            self.pending_shots = shots.to_vec();
         }
         let mut record = json!({"type": "prompt", "message": text});
+        if !shots.is_empty() {
+            record["images"] = shots.iter().map(Shot::to_block).collect();
+        }
         if self.streaming {
             record["streamingBehavior"] = json!(if follow_up { "followUp" } else { "steer" });
         }
-        self.send(record, Some(Pending::Generic("prompt")));
+        let sent = self.send(record, Some(Pending::Generic("prompt")));
         self.sync_live_sessions();
         self.touch();
+        sent && !shots.is_empty()
     }
 
     pub fn end_run(&mut self) {
@@ -612,7 +660,7 @@ impl Core {
                 self.streaming = false;
                 self.turn_started = None;
                 self.pending_prompt = None;
-                self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
+                self.refresh_stats();
                 self.refresh_sessions();
                 if self.session_file.is_none() {
                     self.send(json!({"type": "get_state"}), Some(Pending::State));
@@ -628,11 +676,16 @@ impl Core {
                     }),
                     Some("user") => {
                         self.pending_prompt = None;
+                        self.pending_shots.clear();
                         self.t.add_message(message);
+                        self.refresh_stats();
                     }
                     _ => {}
                 }
             }
+            // The response's usage, then its tool results: each moves the context pi checks
+            // before it asks the model again.
+            "turn_end" => self.refresh_stats(),
             "message_update" => {
                 if let Some(update) = record.get("assistantMessageEvent") {
                     self.t.apply_update(update);
@@ -640,8 +693,13 @@ impl Core {
             }
             "message_end" => {
                 let message = record.get("message").unwrap_or(&Value::Null);
-                if message.get("role").and_then(Value::as_str) != Some("user") {
-                    self.t.add_message(message);
+                match message.get("role").and_then(Value::as_str) {
+                    Some("user") => {}
+                    Some("assistant") => {
+                        self.t.add_message(message);
+                        self.refresh_stats();
+                    }
+                    _ => self.t.add_message(message),
                 }
             }
             "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
@@ -701,18 +759,20 @@ impl Core {
                     let had_deal = self.t.week.deal.is_some();
                     if str_of(entry, "customType") == crate::transcript::FANOUT_VIEW {
                         self.t.add_entry(entry);
-                        if let Some(Item::Fanout { prompt, .. }) = self.task.t.items.last_mut() {
+                        if let Some(Item::Fanout { prompt, shots, .. }) =
+                            self.task.t.items.last_mut()
+                        {
                             *prompt = self.task.pending_prompt.take();
+                            *shots = std::mem::take(&mut self.task.pending_shots);
                         }
                     } else {
                         self.t.add_entry(entry);
                     }
                     if !had_deal && self.t.week.deal.is_some() {
-                        self.pending_prompt = None;
                         self.send(json!({"type": "get_state"}), Some(Pending::State));
                     }
                     if !had_done && self.t.week.done.is_some() {
-                        self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
+                        self.refresh_stats();
                         self.refresh_sessions();
                     }
                 }
@@ -730,6 +790,16 @@ impl Core {
                 .map_or((), |_| ()),
             "compaction_end" => {
                 self.statuses.remove("compaction");
+                // pi counts nothing until the next response, so the meter shows the
+                // compaction's own estimate of what it kept rather than the old size.
+                if let Some(after) = record
+                    .pointer("/result/estimatedTokensAfter")
+                    .and_then(Value::as_f64)
+                {
+                    self.stats.context_tokens = Some(after);
+                    self.stats.predicted = true;
+                }
+                self.refresh_stats();
                 if record.get("errorMessage").and_then(Value::as_str).is_some() {
                     self.toast("Compaction failed.", "error");
                 } else if !record
@@ -897,9 +967,22 @@ impl Core {
             }
             Pending::Stats => {
                 self.stats.cost = data.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
-                self.stats.context_percent = data
-                    .pointer("/contextUsage/percent")
-                    .and_then(Value::as_f64);
+                let usage = data.get("contextUsage");
+                let number = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_f64);
+                self.stats.context_window = number("contextWindow");
+                match number("tokens") {
+                    Some(tokens) => {
+                        self.stats.context_tokens = Some(tokens);
+                        self.stats.predicted = false;
+                    }
+                    // Unknown since a compaction: its estimate stands until a response counts.
+                    None if self.stats.predicted && usage.is_some() => {}
+                    None => {
+                        self.stats.context_tokens = None;
+                        self.stats.predicted = false;
+                    }
+                }
+                self.stats.reserve = config::compaction_reserve(&self.cwd);
             }
             Pending::Commands => {
                 let list = data
@@ -945,6 +1028,8 @@ impl Core {
                     *exit_code = data.get("exitCode").and_then(Value::as_i64);
                     *running = false;
                 }
+                // A `!` command's output joins the context.
+                self.refresh_stats();
             }
             Pending::Generic("export_html") => {
                 let path = str_of(&data, "path");
@@ -974,8 +1059,14 @@ impl Core {
     fn load_session(&mut self) {
         self.send(json!({"type": "get_state"}), Some(Pending::State));
         self.send(json!({"type": "get_entries"}), Some(Pending::Entries));
-        self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
+        self.refresh_stats();
         self.refresh_sessions();
+    }
+
+    /// Asks pi for cost and context, which it counts exactly as its compaction check does.
+    /// Called whenever the context grows or shrinks, so the meter never waits for the turn's end.
+    fn refresh_stats(&mut self) {
+        self.send(json!({"type": "get_session_stats"}), Some(Pending::Stats));
     }
 }
 

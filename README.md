@@ -113,6 +113,7 @@ Edit `roles.json` to fit your accounts. `agents` maps pi model IDs (`provider/id
 - `/done` on every run when you're finished with its task. Switching chats doesn't end or score a run; it stays open and shows on the scoreboard as unrated until you score it.
 - Switching models by hand with `/model` ends nothing, but `/done` then logs the run as 1, *failed*, for the dealt agent, without asking.
 - Don't open `/session` before `/done`, because it names the model.
+- Prompts can carry images: paste or drop them in the app, or attach them as plain pi allows. Jev reads only the text and a note that images came with it; fan-out contenders all get the images. Contenders without vision see pi's placeholder, so keep image-heavy tasks in mind when you score.
 
 ## Scoreboard
 
@@ -120,9 +121,9 @@ Edit `roles.json` to fit your accounts. `agents` maps pi model IDs (`provider/id
 node scoreboard/scoreboard.mjs --since 2026-11-09 [--until 2026-11-14]
 ```
 
-You get one table per role: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Above the tables, and under each role, a line shows who decided the role: Jev, the picker, `/role` or the fallback. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
+A **Leaders** table comes first: who's winning each role, their mean score or fan-out record, and how far ahead of the runner-up they are. Then you get one table per role, with the leader in bold: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Above the tables, and under each role, a line shows who decided the role: Jev, the picker, `/role` or the fallback. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
 
-The app's Scoreboard page shows the same numbers as one card per role, with a pixel sprite for each model and role.
+The app's Scoreboard page opens with one tile per role naming its leader, then shows the same numbers as one card per role, with a pixel sprite for each model and role.
 
 ## Laws
 

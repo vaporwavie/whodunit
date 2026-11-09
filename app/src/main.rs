@@ -77,6 +77,17 @@ fn main() {
             ("end", |s: &mut FullUi| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut FullUi| fixtures::scene_reveal(&s.core)),
             ("fanout", |s: &mut FullUi| fixtures::scene_fanout(&s.core)),
+            ("viewer", |s: &mut FullUi| {
+                fixtures::scene_attach(&s.core);
+                s.viewing = Some(fixtures::screenshot());
+                s.composer.focused = false;
+            }),
+            ("attach", |s: &mut FullUi| {
+                fixtures::scene_attach(&s.core);
+                s.attachments = vec![fixtures::screenshot(), fixtures::screenshot()];
+                s.composer
+                    .replace_text("And these two, from the settings page.");
+            }),
             ("run", |s: &mut FullUi| fixtures::scene_run(&s.core)),
             ("tasks", |s: &mut FullUi| fixtures::scene_tasks(&s.core)),
             ("long", |s: &mut FullUi| fixtures::scene_long(&s.core)),

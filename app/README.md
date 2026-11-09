@@ -12,13 +12,21 @@ The sidebar lists chats from every folder in three groups:
 
 - **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too.
 - **Idle**: the chat is open but isn't working. It may be waiting for your reply, a role or fan-out pick, or a score. A dot marks chats waiting on a dialog. Saved open chats from earlier launches also appear here.
-- **Ended**: you've scored the run and sealed the chat.
+- **Ended**: you've scored the run and sealed the chat. This section stays at the bottom of the sidebar and starts collapsed; click its heading to show or hide ended chats. Expanded history scrolls separately from open chats.
 
 Each row shows its folder, with the role, size and score added only after the run ends. Opening a saved chat starts pi in that chat's folder; live chats keep their existing process. Changing folders starts a new chat and leaves other tasks running. Quit the app to stop all its pi processes; chats resume from their saved history, not mid-turn.
 
 Code snippets have a **Copy** button that copies just the code, without Markdown fences. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
 Edits and writes show as diffs. While the agent works, a line over the composer says what it's doing and for how long. Thinking stays hidden until the run ends, since a trace's style names the lab; after that every thought shows in full, capped at twelve lines that scroll.
+
+The ring next to Send shows how close the chat is to compaction. At 100%, pi compacts on its own: that's the model's window minus `compaction.reserveTokens` from pi's settings (the `whodunit/auto` override wins if you set one). It updates after every response and every batch of tool results, not only when the turn ends. Right after a compaction, pi has no count until the next response, so the ring shows the compaction's own estimate of what it kept, marked `~`. With auto-compaction off, it shows the share of the whole window.
+
+## Images
+
+Paste an image with ⌘V, or drop PNG, JPEG, GIF or WebP files anywhere on an open chat. They show as tiles above the composer and go with your next message. × or ⌫ in an empty composer removes one. Click any image, in the composer or the chat, to see it whole; Esc or a click closes it, and **Open in Preview** opens it to zoom. Slash and `!` commands leave them for the next prompt. pi scales large images down before a model sees them.
+
+Jev can't see images, so it classifies the text plus a note saying images are attached. The titler sees them. In a fan-out every contender gets the images, and the winner keeps them for follow-ups. A contender without vision gets pi's placeholder text instead, so an image-heavy task can handicap it.
 
 ## Install
 
@@ -70,6 +78,8 @@ On Linux, read ⌘ as Ctrl.
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |
 | ⌘⏎ | Queue a follow-up while the agent works |
+| ⌘V | Paste text, or attach a copied image or image files |
+| ⌫ | In an empty composer: remove the last attached image |
 | Tab / ⏎ | In the `/` list: complete the command / run it (commands that need an argument are completed instead) |
 | Esc | Cancel the selected chat's dialog, or stop its agent |
 
@@ -80,6 +90,6 @@ whodunit -- --cwd ~/some/dir    # run pi in that folder
 whodunit -- --scoreboard        # print the scoreboard as Markdown and exit
 ```
 
-The Scoreboard page shows the same numbers as `scoreboard/scoreboard.mjs`, laid out like character sheets: a row of model tiles, then one card per role. Each card has the role's criteria, a box per decider (Jev, picker, `/role`, fallback) filled to its share of deals, and every contender's score and win share as pips and its runs as tally marks. The sprites are JSON in `assets/sprites/` (16×16 roles, 12×12 models and deciders, at most 5 colors each). Roles are keyed by role name and deciders by deal source.
+The Scoreboard page shows the same numbers as `scoreboard/scoreboard.mjs`, laid out like character sheets. It opens with **Leading each role**, one tile per role with the agent winning it, its score or fan-out record and its lead over the runner-up; a role shows *No leader yet* until an agent has 3 runs. Below that come the model tiles, then one card per role, where the leader's row is tinted, badged **Leads** and says by how much. Each card has the role's criteria, a box per decider (Jev, picker, `/role`, fallback) filled to its share of deals, and every contender's score and win share as pips and its runs as tally marks. Until a class has a qualifying leader (an agent with at least 3 runs), its entire agent list is replaced with "Come back when there are enough runs for this class." The sprites are JSON in `assets/sprites/` (16×16 roles, 12×12 models and deciders, at most 5 colors each). Roles are keyed by role name and deciders by deal source.
 
 Model artwork in `assets/sprites/models.json` uses stable keys (`opus`, `sol`, `astra`, `gemini`, `kimi`). `assets/sprites/model-aliases.json` maps each supported `provider/model` ID to an artwork key, so multiple providers can share one sprite. To support another ID, add an explicit alias; names and ID fragments are never used to guess the icon. Unlisted IDs get `fallback`. These aliases affect only artwork, not scoreboard grouping or run history. Both files are compiled into the app, so rebuild after editing them.

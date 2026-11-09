@@ -2,8 +2,12 @@
 //! Model and provider fields are never copied in: the dealt agent stays hidden until `/done`.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
-use serde_json::Value;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use serde_json::{Value, json};
 
 pub const DEAL: &str = "whodunit.deal";
 pub const DONE: &str = "whodunit.done";
@@ -12,6 +16,180 @@ pub const FANOUT_VIEW: &str = "whodunit.fanout-view";
 pub const FANOUT_PICK: &str = "whodunit.fanout-pick";
 /// Title of `/done`'s select; its options read `5 · nailed it, great` down to `1 · failed`.
 pub const END_TITLE: &str = "End this run";
+
+/// The largest image the composer takes. pi scales images down before a model sees them, so
+/// this only keeps a stray file from flooding the pipe.
+pub const MAX_SHOT_BYTES: usize = 20 * 1024 * 1024;
+/// File types the composer takes, as pi passes them to models.
+pub const SHOT_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+/// An image attached to a prompt: its bytes, decoded once from pi's base64.
+#[derive(Clone, PartialEq)]
+pub struct Shot {
+    pub mime: &'static str,
+    pub bytes: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for Shot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Shot({}, {} bytes)", self.mime, self.bytes.len())
+    }
+}
+
+impl Shot {
+    /// PNG, JPEG, GIF or WebP, told by its first bytes rather than a name.
+    pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Option<Shot> {
+        let bytes = bytes.into();
+        let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            "image/png"
+        } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            "image/jpeg"
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            "image/gif"
+        } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            "image/webp"
+        } else {
+            return None;
+        };
+        Some(Shot { mime, bytes })
+    }
+
+    /// A dropped or pasted file, or why it can't go with a prompt.
+    pub fn from_file(path: &Path) -> Result<Shot, String> {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let size = std::fs::metadata(path)
+            .map_err(|e| format!("{name}: {e}"))?
+            .len();
+        if size > MAX_SHOT_BYTES as u64 {
+            return Err(format!(
+                "{name} is over {} MB.",
+                MAX_SHOT_BYTES / 1024 / 1024
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
+        Shot::from_bytes(bytes)
+            .ok_or_else(|| format!("{name} isn’t a PNG, JPEG, GIF or WebP image."))
+    }
+
+    /// An `image` content block, as pi stores and sends them.
+    pub fn from_block(block: &Value) -> Option<Shot> {
+        if block.get("type").and_then(Value::as_str) != Some("image") {
+            return None;
+        }
+        let data = block.get("data").and_then(Value::as_str)?;
+        Shot::from_bytes(BASE64.decode(data).ok()?)
+    }
+
+    /// pi's `ImageContent`.
+    pub fn to_block(&self) -> Value {
+        json!({"type": "image", "data": BASE64.encode(&self.bytes), "mimeType": self.mime})
+    }
+
+    /// Width and height in pixels, read from the file's header, so a view can size the image
+    /// before it decodes.
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
+        let b = &self.bytes[..];
+        let be16 = |at: usize| Some(u16::from_be_bytes(b.get(at..at + 2)?.try_into().ok()?) as u32);
+        let le16 = |at: usize| Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?) as u32);
+        let le24 = |at: usize| {
+            let x = b.get(at..at + 3)?;
+            Some(x[0] as u32 | (x[1] as u32) << 8 | (x[2] as u32) << 16)
+        };
+        match self.mime {
+            "image/png" => {
+                let be32 =
+                    |at: usize| Some(u32::from_be_bytes(b.get(at..at + 4)?.try_into().ok()?));
+                Some((be32(16)?, be32(20)?))
+            }
+            "image/gif" => Some((le16(6)?, le16(8)?)),
+            "image/jpeg" => {
+                // Walk the markers to the first start-of-frame, which holds the size.
+                let mut at = 2;
+                loop {
+                    if *b.get(at)? != 0xFF {
+                        return None;
+                    }
+                    let marker = *b.get(at + 1)?;
+                    if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+                        return Some((be16(at + 7)?, be16(at + 5)?));
+                    }
+                    at += match marker {
+                        0xFF => 1,
+                        0x01 | 0xD0..=0xD8 => 2,
+                        _ => 2 + be16(at + 2)? as usize,
+                    };
+                }
+            }
+            _ => match b.get(12..16)? {
+                b"VP8X" => Some((1 + le24(24)?, 1 + le24(27)?)),
+                b"VP8L" => {
+                    let x = b.get(21..25)?;
+                    let w = 1 + ((x[1] as u32 & 0x3F) << 8 | x[0] as u32);
+                    let h =
+                        1 + ((x[3] as u32 & 0x0F) << 10 | (x[2] as u32) << 2 | (x[1] as u32) >> 6);
+                    Some((w, h))
+                }
+                b"VP8 " => Some((le16(26)? & 0x3FFF, le16(28)? & 0x3FFF)),
+                _ => None,
+            },
+        }
+    }
+
+    /// The file extension for its format.
+    pub fn extension(&self) -> &'static str {
+        match self.mime {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            _ => "webp",
+        }
+    }
+
+    /// Writes the image to a temporary file, named for its content, and opens it in the
+    /// system's viewer (Preview on macOS).
+    pub fn open_externally(&self) -> Result<(), String> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.bytes.hash(&mut hasher);
+        let path = std::env::temp_dir().join(format!(
+            "whodunit-image-{:016x}.{}",
+            hasher.finish(),
+            self.extension()
+        ));
+        std::fs::write(&path, &self.bytes).map_err(|e| format!("Couldn’t save the image: {e}"))?;
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        std::process::Command::new(opener)
+            .arg(&path)
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("Couldn’t open the image: {e}"))
+    }
+
+    /// The format, for a tile that can't show the picture itself.
+    pub fn kind(&self) -> &'static str {
+        match self.mime {
+            "image/png" => "PNG",
+            "image/jpeg" => "JPEG",
+            "image/gif" => "GIF",
+            _ => "WebP",
+        }
+    }
+}
+
+/// The images in a `content` array; none for a plain string.
+pub fn shots_of(content: &Value) -> Vec<Shot> {
+    content
+        .as_array()
+        .map(|blocks| blocks.iter().filter_map(Shot::from_block).collect())
+        .unwrap_or_default()
+}
 
 #[derive(Clone, Debug)]
 pub enum Block {
@@ -36,7 +214,10 @@ pub struct FanAnswer {
 
 #[derive(Clone, Debug)]
 pub enum Item {
-    User(String),
+    User {
+        text: String,
+        shots: Vec<Shot>,
+    },
     Assistant {
         blocks: Vec<Option<Block>>,
         streaming: bool,
@@ -50,10 +231,22 @@ pub enum Item {
     },
     Fanout {
         prompt: Option<String>,
+        /// Images that went with the prompt to every contender.
+        shots: Vec<Shot>,
         answers: Vec<FanAnswer>,
         picked: Option<String>,
     },
     Notice(String),
+}
+
+impl Item {
+    /// A prompt with no images.
+    pub fn user(text: impl Into<String>) -> Item {
+        Item::User {
+            text: text.into(),
+            shots: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -258,10 +451,9 @@ impl Transcript {
             }
             Some("custom_message") => {
                 let custom_type = str_of(entry, "customType");
-                let content = content_text(entry.get("content").unwrap_or(&Value::Null));
                 self.add_custom_message(
                     &custom_type,
-                    &content,
+                    entry.get("content").unwrap_or(&Value::Null),
                     entry
                         .get("display")
                         .and_then(Value::as_bool)
@@ -300,6 +492,7 @@ impl Transcript {
                     .unwrap_or_default();
                 self.items.push(Item::Fanout {
                     prompt: None,
+                    shots: Vec::new(),
                     answers,
                     picked: None,
                 });
@@ -319,10 +512,15 @@ impl Transcript {
         }
     }
 
-    pub fn add_custom_message(&mut self, custom_type: &str, content: &str, display: bool) {
+    pub fn add_custom_message(&mut self, custom_type: &str, content: &Value, display: bool) {
+        let text = content_text(content);
         if custom_type == FANOUT_PICK {
-            let prompt = fanout_prompt(content);
-            if let Some(Item::Fanout { prompt: slot, .. }) = self
+            let prompt = fanout_prompt(&text);
+            if let Some(Item::Fanout {
+                prompt: slot,
+                shots,
+                ..
+            }) = self
                 .items
                 .iter_mut()
                 .rev()
@@ -331,14 +529,17 @@ impl Transcript {
                 if slot.is_none() {
                     *slot = prompt.clone();
                 }
+                if shots.is_empty() {
+                    *shots = shots_of(content);
+                }
             }
             if self.first_prompt.is_none() {
                 self.first_prompt = prompt;
             }
             return;
         }
-        if display && !content.is_empty() {
-            self.items.push(Item::Notice(content.to_owned()));
+        if display && !text.is_empty() {
+            self.items.push(Item::Notice(text));
         }
     }
 
@@ -346,11 +547,15 @@ impl Transcript {
     pub fn add_message(&mut self, message: &Value) {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => {
-                let text = content_text(message.get("content").unwrap_or(&Value::Null));
+                let content = message.get("content").unwrap_or(&Value::Null);
+                let text = content_text(content);
                 if self.first_prompt.is_none() {
                     self.first_prompt = Some(text.clone());
                 }
-                self.items.push(Item::User(text));
+                self.items.push(Item::User {
+                    text,
+                    shots: shots_of(content),
+                });
             }
             Some("assistant") => {
                 let error = (str_of(message, "stopReason") == "error")
@@ -386,12 +591,15 @@ impl Transcript {
                 running: false,
             }),
             Some("custom") => {
-                let content = content_text(message.get("content").unwrap_or(&Value::Null));
                 let display = message
                     .get("display")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                self.add_custom_message(&str_of(message, "customType"), &content, display);
+                self.add_custom_message(
+                    &str_of(message, "customType"),
+                    message.get("content").unwrap_or(&Value::Null),
+                    display,
+                );
             }
             Some("compactionSummary") => self
                 .items

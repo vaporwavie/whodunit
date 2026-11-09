@@ -1,11 +1,12 @@
 //! View pieces of the chat window. Every handler reaches the shared core through `HasCore`.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rune::{Color, El, GrowthSpec, ScrollSpec, Tx, col, el, row, spacer, text};
+use rune::{Color, El, GrowthSpec, ScrollSpec, SurfaceFit, Tx, col, el, row, spacer, text};
 use rune_kit::diff::{self, DiffState, DiffView, FileDiff};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Kit, Markdown, MarkdownStyle, Spinner,
@@ -13,13 +14,21 @@ use rune_kit::{
 use serde_json::json;
 
 use crate::core::{Core, DialogKind, Shared, lock, score_key};
-use crate::transcript::{Block, FanAnswer, Item};
+use crate::transcript::{Block, FanAnswer, Item, Shot};
 
 pub trait HasCore: 'static {
     fn core(&self) -> &Shared;
     /// The diff an `edit` or `write` tool call made, by call id, once the window has built it.
     fn diff(&self, id: &str) -> Option<&DiffState>;
     fn diff_mut(&mut self, id: &str) -> &mut DiffState;
+    fn copied_code(&self) -> &HashMap<String, Instant>;
+    fn mark_code_copied(&mut self, id: String);
+    /// A prompt image, decoding or decoded; `None` where nothing decodes (headless tests).
+    fn image(&self, _shot: &Shot) -> Option<rune::Image> {
+        None
+    }
+    /// Opens an image full size, from a click on its tile.
+    fn view_shot(&mut self, _shot: Shot) {}
 }
 
 pub fn with_core<S: HasCore>(s: &S, f: impl FnOnce(&mut Core)) {
@@ -47,9 +56,6 @@ pub fn panel(k: &Kit, focused: bool) -> El {
         &k.elevation.raised,
     )
 }
-
-/// Readable measure for prose; code, tables and fan-out cards keep the full column.
-const PROSE_WIDTH: f32 = 480.0;
 
 pub fn busy_line(core: &Core) -> Option<String> {
     if let Some(text) = core.statuses.get("compaction") {
@@ -130,18 +136,21 @@ fn mono_frame(k: &Kit) -> El {
         .fill(k.c.layer_01)
 }
 
-fn markdown<S: HasCore>(body: String, k: &Kit) -> Markdown {
+pub(super) const COPIED_FOR: Duration = Duration::from_millis(1500);
+
+fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
+    let copied = s.copied_code().clone();
     let style = MarkdownStyle::from_kit(k)
         .code_block(k.c.layer_01, Color::TRANSPARENT)
         .code_block_font(k.ty.mono)
-        .code_block_padding(12.0, 10.0)
-        .prose_width(PROSE_WIDTH);
+        .code_block_padding(12.0, 10.0);
     let k = k.clone();
     Markdown::new(body)
         .style(style)
         .selectable(true)
         .code_frame(move |card, code| {
             let source = code.source.to_owned();
+            let id = format!("{key}-code{}", code.index);
             let mut header = row().w_full().px(12.0).pt(6.0).center_y();
             if let Some(language) = code.language {
                 header = header.child(
@@ -151,16 +160,22 @@ fn markdown<S: HasCore>(body: String, k: &Kit) -> Markdown {
                 );
             }
             header = header.child(spacer()).child(
-                Button::new("Copy")
-                    .variant(ButtonVariant::Ghost)
-                    .control_size(ControlSize::Small)
-                    .on_press_tx(move |s: &mut S, tx| {
-                        tx.copy(source.clone());
-                        with_core(s, |core| core.toast("Snippet copied", "info"));
-                    })
-                    .build(&k)
-                    .key("copy-code")
-                    .label("Copy code"),
+                Button::new(if copied.contains_key(&id) {
+                    "Copied"
+                } else {
+                    "Copy"
+                })
+                .variant(ButtonVariant::Ghost)
+                .control_size(ControlSize::Small)
+                .on_press_tx(move |s: &mut S, tx| {
+                    tx.copy(source.clone());
+                    s.mark_code_copied(id.clone());
+                    tx.wake_after(COPIED_FOR);
+                })
+                .build(&k)
+                .w(72.0)
+                .key("copy-code")
+                .label("Copy code"),
             );
             col()
                 .key(format!("code-{}", code.index))
@@ -263,7 +278,6 @@ fn thinking_block(body: &str, k: &Kit, key: String) -> El {
     col()
         .key(key)
         .w_full()
-        .max_w(PROSE_WIDTH)
         .max_h(THINKING_MAX_H)
         .pl(12.0)
         .border_sides([0.0, 0.0, 0.0, 2.0], c.border_weak)
@@ -405,22 +419,55 @@ fn tool_row(core: &Core, id: &str, name: &str, args: &str, k: &Kit) -> El {
     card
 }
 
-fn user_bubble(prompt: &str, k: &Kit) -> El {
-    row().w_full().justify_end().child(
-        col()
-            .max_w(560.0)
-            .px(14.0)
-            .py(10.0)
-            .radius(k.radius.lg)
-            .fill(k.c.layer_02)
-            .child(
-                text(prompt.to_owned())
-                    .font(k.ty.body)
-                    .color(k.c.text_base)
-                    .wrap()
-                    .selectable(true),
-            ),
-    )
+/// An attached image, cropped to a square so a tile never changes size as it decodes. A
+/// format the window can't draw (GIF, WebP) shows its name instead. A click opens it whole.
+pub fn shot_tile<S: HasCore>(s: &S, shot: &Shot, side: f32, k: &Kit) -> El {
+    let c = &k.c;
+    let opened = shot.clone();
+    let tile = col()
+        .size(side, side)
+        .center()
+        .radius(k.radius.md)
+        .fill(c.layer_01)
+        .border(1.0, c.border_weak)
+        .role("button")
+        .label(format!("Open attached {} image", shot.kind()))
+        .cursor(rune::Cursor::Pointer)
+        .on_press(move |s: &mut S| s.view_shot(opened.clone()));
+    match s.image(shot).filter(|image| image.error().is_none()) {
+        Some(image) => tile.pixels_fit(image.pixels(), SurfaceFit::Fill),
+        None => tile.child(text(shot.kind()).font(k.ty.small).color(c.text_muted)),
+    }
+}
+
+const BUBBLE_SHOT: f32 = 96.0;
+
+fn user_bubble<S: HasCore>(s: &S, prompt: &str, shots: &[Shot], k: &Kit) -> El {
+    let mut column = col().items_end().gap(8.0).max_w(560.0);
+    if !shots.is_empty() {
+        column = column.child(row().gap(8.0).flex_wrap().justify_end().children(
+            shots.iter().enumerate().map(|(index, shot)| {
+                shot_tile(s, shot, BUBBLE_SHOT, k).key(format!("shot-{index}"))
+            }),
+        ));
+    }
+    if !prompt.trim().is_empty() {
+        column = column.child(
+            col()
+                .px(14.0)
+                .py(10.0)
+                .radius(k.radius.lg)
+                .fill(k.c.layer_02)
+                .child(
+                    text(prompt.to_owned())
+                        .font(k.ty.body)
+                        .color(k.c.text_base)
+                        .wrap()
+                        .selectable(true),
+                ),
+        );
+    }
+    row().w_full().justify_end().child(column)
 }
 
 fn assistant_view<S: HasCore>(
@@ -438,7 +485,7 @@ fn assistant_view<S: HasCore>(
     for (index, block) in blocks.iter().enumerate() {
         match block {
             Some(Block::Text(body)) if !body.is_empty() => {
-                let md = markdown::<S>(body.clone(), k)
+                let md = markdown(s, body.clone(), format!("{key}-md{index}"), k)
                     .streaming(streaming)
                     .build(k)
                     .key(format!("{key}-md{index}"));
@@ -476,9 +523,11 @@ fn assistant_view<S: HasCore>(
 }
 
 fn fanout_card<S: HasCore>(
+    s: &S,
     core: &Core,
     answer: &FanAnswer,
     picked: &Option<String>,
+    key: &str,
     k: &Kit,
 ) -> El {
     let c = &k.c;
@@ -515,7 +564,13 @@ fn fanout_card<S: HasCore>(
             .font(k.ty.small)
             .color(c.danger.fg)
             .wrap(),
-        _ => markdown::<S>(answer.text.clone(), k).build(k),
+        _ => markdown(
+            s,
+            answer.text.clone(),
+            format!("{key}-fan-{}", answer.label),
+            k,
+        )
+        .build(k),
     };
     col()
         .key(format!("fan-{}", answer.label))
@@ -537,16 +592,19 @@ fn fanout_card<S: HasCore>(
         .child(body)
 }
 
+/// `prompt` is the request's bubble, once the transcript has it.
 fn fanout_view<S: HasCore>(
+    s: &S,
     core: &Core,
-    prompt: &Option<String>,
+    prompt: Option<El>,
     answers: &[FanAnswer],
     picked: &Option<String>,
+    key: &str,
     k: &Kit,
 ) -> El {
     let mut column = col().w_full().gap(12.0);
     if let Some(prompt) = prompt {
-        column = column.child(user_bubble(prompt, k));
+        column = column.child(prompt);
     }
     let note = match picked {
         Some(label) => {
@@ -556,14 +614,16 @@ fn fanout_view<S: HasCore>(
             .to_owned(),
     };
     column = column.child(text(note).font(k.ty.small).color(k.c.text_muted));
-    let cards = answers.iter().map(|a| fanout_card::<S>(core, a, picked, k));
+    let cards = answers
+        .iter()
+        .map(|a| fanout_card(s, core, a, picked, key, k));
     column.child(row().w_full().gap(12.0).items_start().children(cards))
 }
 
 fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) -> El {
     let c = &k.c;
     let view = match item {
-        Item::User(prompt) => user_bubble(prompt, k),
+        Item::User { text, shots } => user_bubble(s, text, shots, k),
         Item::Assistant {
             blocks,
             streaming,
@@ -599,9 +659,13 @@ fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) ->
         }
         Item::Fanout {
             prompt,
+            shots,
             answers,
             picked,
-        } => fanout_view::<S>(core, prompt, answers, picked, k),
+        } => {
+            let bubble = prompt.as_ref().map(|p| user_bubble(s, p, shots, k));
+            fanout_view::<S>(s, core, bubble, answers, picked, key, k)
+        }
         Item::Notice(note) => row()
             .w_full()
             .gap(12.0)
@@ -633,7 +697,9 @@ pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
                     Some(item) => item_view::<S>(s, &core, item, &format!("item-{i}"), k),
                     None => core.pending_prompt.as_deref().map_or_else(
                         || col(),
-                        |prompt| user_bubble(prompt, k).key("pending-prompt"),
+                        |prompt| {
+                            user_bubble(s, prompt, &core.pending_shots, k).key("pending-prompt")
+                        },
                     ),
                 };
                 col()

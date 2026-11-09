@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { Message } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type Ending, SCORES, SWITCHED } from "./rules.ts";
@@ -108,10 +108,32 @@ function isWhodunit(model: { provider: string; id: string } | undefined): boolea
 	return model?.provider === PROVIDER && model.id === MODEL_ID;
 }
 
+/** What Jev reads of a prompt: its text, plus a note for attached images, which it can't see. */
+function judgedText(text: string, images: number): string {
+	if (images === 0) return text;
+	const note = `[${images === 1 ? "An image is" : `${images} images are`} attached to this request.]`;
+	return text.trim() ? `${text}\n\n${note}` : note;
+}
+
 function lastUserText(messages: readonly Message[]): string {
 	const content = messages.filter((message) => message.role === "user").at(-1)?.content ?? "";
 	if (typeof content === "string") return content;
-	return content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+	const text = content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+	return judgedText(text, content.filter((block) => block.type === "image").length);
+}
+
+const IMAGE_EXTENSIONS: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
+/** Writes the images where a fan-out's children can attach them as `@path`; `cleanup` removes them. */
+function stageImages(images: readonly ImageContent[]): { paths: string[]; cleanup: () => void } {
+	if (images.length === 0) return { paths: [], cleanup: () => undefined };
+	const dir = mkdtempSync(join(tmpdir(), "whodunit-images-"));
+	const paths = images.map((image, index) => {
+		const path = join(dir, `image-${index + 1}.${IMAGE_EXTENSIONS[image.mimeType] ?? "png"}`);
+		writeFileSync(path, Buffer.from(image.data, "base64"));
+		return path;
+	});
+	return { paths, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 function sessionRef(ctx: ExtensionContext): { sessionId: string; sessionFile: string | undefined } {
@@ -147,12 +169,19 @@ async function classify(ctx: ExtensionContext, config: Config, prompt: string): 
 	return { role, size, confidence, probabilities, source: "jev" };
 }
 
-async function generateTitle(ctx: ExtensionContext, agent: string, prompt: string, signal: AbortSignal): Promise<string | undefined> {
+async function generateTitle(
+	ctx: ExtensionContext,
+	agent: string,
+	prompt: string,
+	images: readonly ImageContent[],
+	signal: AbortSignal,
+): Promise<string | undefined> {
 	const { provider, id } = splitAgent(agent);
 	const model = ctx.modelRegistry.find(provider, id);
 	if (!model) return undefined;
+	const content: (TextContent | ImageContent)[] = [{ type: "text", text: prompt.slice(0, 4_000) || "(no text, only the attached images)" }, ...images];
 	const reply = await ctx.modelRegistry
-		.streamSimple(model, { systemPrompt: TITLE_PROMPT, messages: [{ role: "user", content: prompt.slice(0, 4_000), timestamp: Date.now() }] }, { maxTokens: 40, signal })
+		.streamSimple(model, { systemPrompt: TITLE_PROMPT, messages: [{ role: "user", content, timestamp: Date.now() }] }, { maxTokens: 40, signal })
 		.result();
 	if (reply.stopReason !== "stop") return undefined;
 	const title = textOf(reply).split("\n")[0].trim().replace(/^["'`*]+|["'`*.]+$/g, "");
@@ -184,6 +213,7 @@ function runChild(
 	agent: string,
 	effort: Effort,
 	prompt: string,
+	images: readonly string[],
 	cwd: string,
 	children: Set<ChildProcess>,
 ): Promise<Omit<FanoutEntry, "label">> {
@@ -201,7 +231,8 @@ function runChild(
 			FANOUT_TOOLS,
 			"--model",
 			`${agent}:${effort}`,
-			prompt,
+			...images.map((path) => `@${path}`),
+			prompt || "See the attached images.",
 		];
 		const child = spawn("pi", args, { cwd, env: { ...process.env, WHODUNIT_CHILD: "1" }, stdio: ["ignore", "pipe", "pipe"] });
 		children.add(child);
@@ -257,6 +288,7 @@ async function fanOut(
 	config: Config,
 	classification: Classification,
 	prompt: string,
+	images: readonly ImageContent[],
 	children: Set<ChildProcess>,
 ): Promise<Deal> {
 	const role = config.roles[classification.role];
@@ -270,20 +302,22 @@ async function fanOut(
 	};
 	render();
 	const ticker = setInterval(render, 1000);
+	const staged = stageImages(images);
 	const results = await Promise.all(
 		order.map(async (agent, index) => {
-			const result = await runChild(agent, role.effort, prompt, ctx.cwd, children);
+			const result = await runChild(agent, role.effort, prompt, staged.paths, ctx.cwd, children);
 			status[index] = result.ok ? "done" : "failed";
 			render();
 			return { ...result, label: LABELS[index] };
 		}),
-	);
+	).finally(staged.cleanup);
 	clearInterval(ticker);
 	ctx.ui.setWidget(PROVIDER, undefined);
 
 	pi.appendEntry(FANOUT_VIEW, {
 		role: classification.role,
 		prompt,
+		images: images.length,
 		answers: results.map(({ label, ok, error, text, toolCalls }) => ({ label, ok, error, text, searched: Object.keys(toolCalls).some((name) => name.startsWith("mcp__exa__")) })),
 	});
 	const pickable = results.filter((result) => result.ok);
@@ -299,10 +333,17 @@ async function fanOut(
 		winner: winner.agent,
 		entries: results.map(({ label, agent, ok, error, costUsd, seconds, toolCalls }) => ({ label, agent, ok, error, costUsd, seconds, toolCalls })),
 	});
+	// The images sit with the request, so the winner still sees them on follow-ups. Joined, the
+	// text blocks read "User request:\n\n<prompt>\n\nYour answer:", which the app parses.
+	const content: (TextContent | ImageContent)[] = [
+		{ type: "text", text: `User request:\n\n${prompt}` },
+		...images,
+		{ type: "text", text: `\n\nYour answer:\n\n${winner.text}` },
+	];
 	pi.sendMessage(
 		{
 			customType: FANOUT_PICK,
-			content: `User request:\n\n${prompt}\n\nYour answer:\n\n${winner.text}`,
+			content,
 			display: false,
 			details: { label: winner.label },
 		},
@@ -377,9 +418,9 @@ export default function (pi: ExtensionAPI) {
 		};
 	};
 
-	const nameSession = (ctx: ExtensionContext, config: Config, prompt: string) => {
+	const nameSession = (ctx: ExtensionContext, config: Config, prompt: string, images: readonly ImageContent[]) => {
 		if (pi.getSessionName()) return;
-		generateTitle(ctx, config.titler ?? TITLER, prompt, titling.signal)
+		generateTitle(ctx, config.titler ?? TITLER, prompt, images, titling.signal)
 			.then((title) => {
 				if (title && !pi.getSessionName()) pi.setSessionName(title);
 			})
@@ -431,8 +472,9 @@ export default function (pi: ExtensionAPI) {
 		if (findEntry<Deal>(ctx, DEAL)) return { action: "continue" };
 
 		const config = loadConfig();
-		nameSession(ctx, config, event.text);
-		const classification = await pickClassification(ctx, config, event.text);
+		const images = event.images ?? [];
+		nameSession(ctx, config, event.text, images);
+		const classification = await pickClassification(ctx, config, judgedText(event.text, images.length));
 		const role = config.roles[classification.role];
 		const fanoutReady = role?.fanout && ctx.hasUI && role.contenders.length <= LABELS.length;
 		if (!fanoutReady) {
@@ -440,7 +482,7 @@ export default function (pi: ExtensionAPI) {
 			setFooter(ctx, footerLabel(ctx));
 			return { action: "continue" };
 		}
-		const deal = await fanOut(pi, ctx, config, classification, event.text, children);
+		const deal = await fanOut(pi, ctx, config, classification, event.text, images, children);
 		recordDeal(ctx, deal);
 		setFooter(ctx, footerLabel(ctx));
 		return { action: "handled" };
@@ -470,9 +512,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerEntryRenderer(FANOUT_VIEW, (entry, _options, theme) => {
-		const data = entry.data as { role: string; prompt: string; answers: { label: string; ok: boolean; error?: string; text: string; searched?: boolean }[] };
+		const data = entry.data as { role: string; prompt: string; images?: number; answers: { label: string; ok: boolean; error?: string; text: string; searched?: boolean }[] };
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		box.addChild(new Text(theme.fg("dim", data.prompt)));
+		box.addChild(new Text(theme.fg("dim", judgedText(data.prompt, data.images ?? 0))));
 		box.addChild(new Text(""));
 		box.addChild(new Text(theme.bold("Fan-out: pick the best answer")));
 		for (const answer of data.answers) {

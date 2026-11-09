@@ -6,6 +6,71 @@ fn core() -> Core {
 }
 
 #[test]
+fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
+    use crate::ui::full::{self, FullUi};
+    use rune::{Env, Runtime};
+
+    let shared = Arc::new(Mutex::new(core()));
+    let mut rt = Runtime::new(
+        FullUi::new(shared.clone()),
+        full::view,
+        (1180.0, 780.0),
+        Env::new(true, 1.0),
+    );
+    rt.poll = Some(full::poll);
+    rt.frame(0.0);
+    assert!(
+        rt.elements()
+            .iter()
+            .any(|e| e.key.as_deref() == Some("dither"))
+    );
+
+    let shot = crate::fixtures::screenshot();
+    lock(&shared).submit_with("Check this screen", false, std::slice::from_ref(&shot));
+    rt.frame(0.016);
+    rt.frame(1.0); // The welcome's one exit fade has finished before classification returns.
+
+    let message = json!({"role": "user", "content": [
+        {"type": "text", "text": "Check this screen"}, shot.to_block()
+    ]});
+    let records = [
+        json!({"type": "entry_appended", "entry": {
+            "type": "custom", "customType": DEAL,
+            "data": {"role": "builder", "size": "S", "agent": "secret/model"}
+        }}),
+        json!({"type": "agent_start"}),
+        json!({"type": "message_start", "message": message}),
+        json!({"type": "message_end", "message": message}),
+    ];
+    for record in records {
+        let kind = str_of(&record, "type");
+        lock(&shared).apply(record);
+        rt.frame(0.016);
+        let elements = rt.elements();
+        assert!(
+            !elements
+                .iter()
+                .any(|e| matches!(e.key.as_deref(), Some("dither" | "empty-intro"))),
+            "the welcome returned after {kind}"
+        );
+        assert!(
+            elements
+                .iter()
+                .any(|e| e.text.as_deref() == Some("Check this screen")),
+            "the prompt disappeared after {kind}"
+        );
+        assert!(lock(&shared).reveal().is_none());
+    }
+    let core = lock(&shared);
+    assert!(core.pending_prompt.is_none());
+    assert!(core.pending_shots.is_empty());
+    assert!(
+        matches!(core.t.items.as_slice(), [Item::User { text, shots }]
+        if text == "Check this screen" && shots == &[shot])
+    );
+}
+
+#[test]
 fn classification_and_fanouts_are_listed_before_a_session_file_exists() {
     let mut core = core();
     core.task.generation = 1;
@@ -133,4 +198,160 @@ fn navigation_neither_ends_nor_aborts_a_working_task() {
         "selecting the current chat is a no-op"
     );
     assert_eq!(core.unstarted.len(), 1);
+}
+
+fn stats_response(core: &mut Core, usage: Value) {
+    core.pending.insert("stats".into(), Pending::Stats);
+    core.apply(json!({"type": "response", "id": "stats", "command": "get_session_stats", "success": true, "data": {"cost": 0.1, "contextUsage": usage}}));
+}
+
+fn asks_for_stats(core: &Core) -> bool {
+    core.pending.values().any(|p| matches!(p, Pending::Stats))
+}
+
+#[test]
+fn the_context_meter_reads_against_compaction_and_follows_the_turn() {
+    let mut core = core();
+    core.pi = None;
+    stats_response(
+        &mut core,
+        json!({"tokens": 128_000, "contextWindow": 272_000, "percent": 47}),
+    );
+    let limit = 272_000.0 - core.stats.reserve.unwrap_or(0.0);
+    let percent = core.stats.context_percent().unwrap();
+    assert!((percent - 128_000.0 / limit * 100.0).abs() < 1e-9);
+
+    // Each response and each batch of tool results asks again, without waiting for the end.
+    for record in [
+        json!({"type": "message_end", "message": {"role": "assistant", "content": []}}),
+        json!({"type": "turn_end"}),
+    ] {
+        core.pending.clear();
+        core.apply(record);
+        assert!(asks_for_stats(&core));
+    }
+
+    // After a compaction pi counts nothing until the next response; its estimate stands in.
+    core.pending.clear();
+    core.apply(json!({"type": "compaction_end", "reason": "threshold", "result": {"estimatedTokensAfter": 32_000}, "aborted": false}));
+    assert!(asks_for_stats(&core));
+    assert_eq!(core.stats.context_tokens, Some(32_000.0));
+    assert!(core.stats.predicted);
+    stats_response(
+        &mut core,
+        json!({"tokens": null, "contextWindow": 272_000, "percent": null}),
+    );
+    assert_eq!(
+        core.stats.context_tokens,
+        Some(32_000.0),
+        "the estimate holds"
+    );
+    stats_response(
+        &mut core,
+        json!({"tokens": 41_000, "contextWindow": 272_000, "percent": 15}),
+    );
+    assert_eq!(core.stats.context_tokens, Some(41_000.0));
+    assert!(!core.stats.predicted, "pi's count replaces the estimate");
+}
+
+#[test]
+fn compaction_settings_layer_like_pi() {
+    let dir = std::env::temp_dir().join(format!("whodunit-settings-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(".pi")).unwrap();
+    let settings = dir.join(".pi/settings.json");
+    std::fs::write(&settings, r#"{"compaction": {"reserveTokens": 1000, "modelOverrides": {"whodunit/auto": {"reserveTokens": 2000}}}}"#).unwrap();
+    assert_eq!(
+        config::compaction_reserve(&dir),
+        Some(2000.0),
+        "the override for the selection wins"
+    );
+    std::fs::write(&settings, r#"{"compaction": {"enabled": false}}"#).unwrap();
+    assert_eq!(config::compaction_reserve(&dir), None);
+    let stats = Stats {
+        context_tokens: Some(68_000.0),
+        context_window: Some(272_000.0),
+        ..Stats::default()
+    };
+    assert_eq!(
+        stats.context_percent(),
+        Some(25.0),
+        "with it off, the whole window"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn images_go_with_prompts_but_not_commands() {
+    let mut core = core();
+    let shot = crate::fixtures::screenshot();
+    let shots = std::slice::from_ref(&shot);
+    assert!(!core.submit_with("/name Tidy up", false, shots));
+    assert!(core.outbox.last().unwrap().get("images").is_none());
+    assert!(core.submit_with("What's off here?", false, shots));
+    let record = core.outbox.last().unwrap();
+    assert_eq!(record["images"][0]["mimeType"], "image/png");
+    assert_eq!(
+        crate::transcript::Shot::from_block(&record["images"][0]).as_ref(),
+        Some(&shot),
+        "base64 round-trips"
+    );
+    assert_eq!(core.pending_shots, std::slice::from_ref(&shot));
+
+    // A fan-out's prompt and images come back with its view.
+    core.apply(json!({"type": "entry_appended", "entry": {
+        "type": "custom", "customType": FANOUT_VIEW,
+        "data": {"role": "scout", "prompt": "What's off here?", "images": 1, "answers": []}
+    }}));
+    let Some(Item::Fanout { prompt, shots, .. }) = core.t.items.last() else {
+        panic!("a fan-out");
+    };
+    assert_eq!(prompt.as_deref(), Some("What's off here?"));
+    assert_eq!(shots, std::slice::from_ref(&shot));
+}
+
+#[test]
+fn a_saved_fanout_reads_its_images_from_the_pick() {
+    let shot = crate::fixtures::screenshot();
+    let entries = [
+        json!({"type": "custom", "id": "1", "parentId": null, "customType": FANOUT_VIEW, "data": {"role": "scout", "answers": []}}),
+        json!({"type": "custom_message", "id": "2", "parentId": "1", "customType": crate::transcript::FANOUT_PICK, "display": false, "content": [
+            {"type": "text", "text": "User request:\n\nWhat's off here?"},
+            shot.to_block(),
+            {"type": "text", "text": "\n\nYour answer:\n\nThe padding."},
+        ]}),
+    ];
+    let t = Transcript::from_entries(&entries, Some("2"));
+    let Some(Item::Fanout { prompt, shots, .. }) = t.items.first() else {
+        panic!("a fan-out");
+    };
+    assert_eq!(prompt.as_deref(), Some("What's off here?"));
+    assert_eq!(shots, &[shot]);
+}
+
+#[test]
+fn image_sizes_come_from_their_headers() {
+    use crate::transcript::Shot;
+    assert_eq!(crate::fixtures::screenshot().dimensions(), Some((240, 160)));
+    let gif = [b"GIF89a".as_slice(), &[0x40, 0x01, 0xF0, 0x00]].concat();
+    assert_eq!(
+        Shot::from_bytes(gif).unwrap().dimensions(),
+        Some((320, 240))
+    );
+    // A JFIF segment to skip, then the baseline frame: 1080 high, 1920 wide.
+    let jpeg = [
+        &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00][..],
+        &[0xFF, 0xC0, 0x00, 0x11, 0x08, 0x04, 0x38, 0x07, 0x80],
+    ]
+    .concat();
+    assert_eq!(
+        Shot::from_bytes(jpeg).unwrap().dimensions(),
+        Some((1920, 1080))
+    );
+    let mut webp = b"RIFF\0\0\0\0WEBPVP8X".to_vec();
+    webp.extend([0; 8]);
+    webp.extend([0x7F, 0x07, 0x00, 0x37, 0x04, 0x00]); // 1919 + 1, 1079 + 1
+    assert_eq!(
+        Shot::from_bytes(webp).unwrap().dimensions(),
+        Some((1920, 1080))
+    );
 }

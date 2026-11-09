@@ -68,6 +68,9 @@ fn load(json: &str, pt: usize) -> HashMap<String, Art> {
 
 static ROLES: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/roles.json"), 4));
+/// The same role art at one point per pixel, 16 points square: the sidebar's ended-run icon.
+static ROLE_ICONS: LazyLock<HashMap<String, Art>> =
+    LazyLock::new(|| load(include_str!("../assets/sprites/roles.json"), 1));
 static MODELS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 3));
 static MODEL_ALIASES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
@@ -83,6 +86,10 @@ fn pick<'a>(set: &'a HashMap<String, Art>, key: &str) -> &'a Art {
 
 pub fn role(name: &str) -> &'static Art {
     pick(&ROLES, name)
+}
+
+pub fn role_icon(name: &str) -> &'static Art {
+    pick(&ROLE_ICONS, name)
 }
 
 pub fn model(agent: &str) -> &'static Art {

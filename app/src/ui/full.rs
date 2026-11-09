@@ -6,17 +6,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rune::{
-    AnimExt, Color, Cx, El, Family, Icon, Key, KeyEvent, ScrollSpec, Shape, Spring, TextEdit,
-    TextStyle, Transition, Tx, col, el, row, text,
+    AnimExt, ClipboardContent, Color, Cx, El, Family, Icon, ImageCache, Key, KeyEvent, ScrollSpec,
+    Shape, Spring, TextEdit, TextStyle, Transition, Tx, col, el, row, text,
 };
 use rune_kit::diff::DiffState;
 use rune_kit::shell::{
-    self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarRow, SidebarSection, SidebarToggle,
-    SplitView, Toolbar,
+    self, PaneMotion, PaneState, RowStatus, Sidebar, SidebarHeader, SidebarRow, SidebarSection,
+    SidebarToggle, SplitView, Toolbar,
 };
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle,
-    TextArea, popover,
+    Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle, popover,
 };
 
 use crate::config;
@@ -26,7 +25,7 @@ use crate::core::{
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::sprites;
-use crate::transcript::Item;
+use crate::transcript::{Item, SHOT_EXTENSIONS, Shot};
 use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
@@ -58,6 +57,11 @@ static SEND: Icon = Icon {
     view: 16.0,
     body: r#"<path d="M8 12.5V3.5M4 7.5L8 3.5L12 7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
 };
+static REMOVE: Icon = Icon {
+    name: "aw-remove",
+    view: 16.0,
+    body: r#"<path d="M5 5L11 11M11 5L5 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
+};
 static STOP: Icon = Icon {
     name: "aw-stop",
     view: 16.0,
@@ -70,11 +74,30 @@ pub enum Page {
     Scoreboard,
 }
 
+/// What a chat's composer holds while another chat is selected.
+#[derive(Default)]
+struct Draft {
+    composer: TextEdit,
+    dialog_edit: TextEdit,
+    attachments: Vec<Shot>,
+    editor_generation: u64,
+    dialog_generation: u64,
+}
+
 pub struct FullUi {
     pub core: Shared,
     pub composer: TextEdit,
+    /// Images pasted or dropped on the composer, sent with the next prompt.
+    pub attachments: Vec<Shot>,
     pub dialog_edit: TextEdit,
+    /// Decodes prompt images for their tiles; set up with the window's waker.
+    images: Option<ImageCache>,
+    /// A file drag the composer would take is over the chat.
+    dropping: bool,
+    /// The image open full size over the window.
+    pub viewing: Option<Shot>,
     pub sidebar: PaneState,
+    ended_collapsed: bool,
     pub page: Page,
     pub board: Option<Board>,
     /// When the open board's decider fills start rising; None once they have, or for a board
@@ -83,6 +106,7 @@ pub struct FullUi {
     pub picker: FolderPicker,
     /// Diffs of the open session's `edit` and `write` calls, by call id.
     diffs: HashMap<String, DiffState>,
+    copied_code: HashMap<String, Instant>,
     /// The working timer's second as last drawn.
     ticked: Option<u64>,
     window_focused: bool,
@@ -93,7 +117,7 @@ pub struct FullUi {
     seen: u64,
     seen_task: u64,
     seen_loads: u64,
-    drafts: HashMap<u64, (TextEdit, TextEdit, u64, u64)>,
+    drafts: HashMap<u64, Draft>,
     editor_generation: u64,
     dialog_generation: u64,
 }
@@ -110,6 +134,23 @@ impl HasCore for FullUi {
     fn diff_mut(&mut self, id: &str) -> &mut DiffState {
         self.diffs.entry(id.to_owned()).or_default()
     }
+
+    fn copied_code(&self) -> &HashMap<String, Instant> {
+        &self.copied_code
+    }
+
+    fn mark_code_copied(&mut self, id: String) {
+        self.copied_code
+            .insert(id, Instant::now() + parts::COPIED_FOR);
+    }
+
+    fn image(&self, shot: &Shot) -> Option<rune::Image> {
+        Some(self.images.as_ref()?.load(shot.bytes.clone()))
+    }
+
+    fn view_shot(&mut self, shot: Shot) {
+        self.viewing = Some(shot);
+    }
 }
 
 impl FullUi {
@@ -119,13 +160,19 @@ impl FullUi {
         FullUi {
             core,
             composer,
+            attachments: Vec::new(),
             dialog_edit: TextEdit::new(""),
+            images: None,
+            dropping: false,
+            viewing: None,
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
+            ended_collapsed: true,
             page: Page::Chat,
             board: None,
             board_rise_at: None,
             picker: FolderPicker::default(),
             diffs: HashMap::new(),
+            copied_code: HashMap::new(),
             ticked: None,
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
@@ -197,7 +244,9 @@ fn submit(s: &mut FullUi, tx: &mut Tx, follow_up: bool) {
     s.show(Page::Chat, tx);
     let shared = s.core.clone();
     let mut core = lock(&shared);
-    core.submit(&text, follow_up);
+    if core.submit_with(&text, follow_up, &s.attachments) {
+        s.attachments.clear();
+    }
     // `/new` leaves as the New task button does.
     catch_up(s, &core, tx);
     start_soon(&core, tx);
@@ -269,8 +318,48 @@ fn composer_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Enter if ev.mods.shift => false,
         Key::Up | Key::Down | Key::Tab | Key::Enter => slash_key(s, &ev.key, tx),
+        Key::Backspace if empty && !ev.mods.cmd => s.attachments.pop().is_some(),
         _ => false,
     }
+}
+
+/// Files a drop or paste can attach, whatever their extension's case.
+fn is_shot_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SHOT_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// Adds images to the composer. A sealed chat or an open dialog takes none, as it takes no prompt.
+fn attach(s: &mut FullUi, shots: impl IntoIterator<Item = Result<Shot, String>>) {
+    let mut core = lock(&s.core);
+    if core.t.week.done.is_some() || core.dialog.is_some() {
+        return;
+    }
+    for shot in shots {
+        match shot {
+            Ok(shot) => s.attachments.push(shot),
+            Err(error) => core.toast(error, "error"),
+        }
+    }
+    s.composer.focused = true;
+}
+
+/// ⌘V with an image, a screenshot or image files copied in Finder attaches them; anything
+/// else pastes as text.
+fn composer_paste(s: &mut FullUi, content: &ClipboardContent, _: &mut Tx) -> bool {
+    let files: Vec<_> = content.files().iter().filter(|p| is_shot_file(p)).collect();
+    if !files.is_empty() {
+        attach(s, files.into_iter().map(|p| Shot::from_file(p)));
+        return true;
+    }
+    let Some(image) = content.image() else {
+        return false;
+    };
+    let shot = Shot::from_bytes(image.png().to_vec())
+        .ok_or_else(|| "The pasted image couldn’t be read.".to_owned());
+    attach(s, [shot]);
+    true
 }
 
 /// ↑/↓ move the slash list's highlight, Tab completes it, ⏎ runs it.
@@ -328,6 +417,14 @@ fn slash_matches(input: &str, core: &Core) -> Vec<(String, String)> {
 }
 
 pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.viewing.is_some() {
+        // Esc closes the image, and only the image: it never also stops the agent.
+        if ev.key == Key::Escape {
+            close_viewer(s);
+            return true;
+        }
+        return false;
+    }
     if s.picker.open {
         if ev.is_command('o') {
             folder_picker::close(s);
@@ -378,21 +475,20 @@ fn catch_up(s: &mut FullUi, core: &Core, tx: &mut Tx) -> bool {
     s.seen = core.version;
     let switched = core.task_id() != s.seen_task;
     if switched {
-        let (composer, dialog_edit, editor_generation, dialog_generation) = s
-            .drafts
-            .remove(&core.task_id())
-            .unwrap_or_else(|| (TextEdit::new(""), TextEdit::new(""), 0, 0));
-        let previous = (
-            std::mem::replace(&mut s.composer, composer),
-            std::mem::replace(&mut s.dialog_edit, dialog_edit),
-            s.editor_generation,
-            s.dialog_generation,
-        );
+        let draft = s.drafts.remove(&core.task_id()).unwrap_or_default();
+        let previous = Draft {
+            composer: std::mem::replace(&mut s.composer, draft.composer),
+            dialog_edit: std::mem::replace(&mut s.dialog_edit, draft.dialog_edit),
+            attachments: std::mem::replace(&mut s.attachments, draft.attachments),
+            editor_generation: s.editor_generation,
+            dialog_generation: s.dialog_generation,
+        };
         s.drafts.insert(s.seen_task, previous);
         s.seen_task = core.task_id();
+        s.viewing = None;
         s.composer.focused = true;
-        s.editor_generation = editor_generation;
-        s.dialog_generation = dialog_generation;
+        s.editor_generation = draft.editor_generation;
+        s.dialog_generation = draft.dialog_generation;
         s.diffs.clear();
         tx.scroll_to_bottom_instant("transcript");
         changed = true;
@@ -400,6 +496,7 @@ fn catch_up(s: &mut FullUi, core: &Core, tx: &mut Tx) -> bool {
     let reloaded = core.loads != s.seen_loads;
     s.seen_loads = core.loads;
     if switched || reloaded {
+        s.copied_code.clear();
         tx.settle();
     }
     if changed {
@@ -447,7 +544,14 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     if let Some(next) = core.expire_toasts() {
         tx.wake_after(next + Duration::from_millis(50));
     }
-    let mut changed = s.picker.poll();
+    let now = Instant::now();
+    let before = s.copied_code.len();
+    s.copied_code.retain(|_, until| *until > now);
+    if let Some(until) = s.copied_code.values().min() {
+        tx.wake_after(*until - now);
+    }
+    let mut changed = s.copied_code.len() != before;
+    changed |= s.picker.poll();
     changed |= catch_up(s, &core, tx);
     let second = core.turn_started.map(|started| started.elapsed().as_secs());
     if second != s.ticked {
@@ -486,6 +590,10 @@ fn session_row(s: &FullUi, core: &Core, summary: &Summary, k: &Kit) -> El {
         .subtitle(summary.subtitle())
         .selected(current && s.page == Page::Chat)
         .on_select(move |s: &mut FullUi, tx| s.leave(Leave::Open(path.clone()), tx));
+    // The role's sprite, only once the run has ended and the role can show.
+    if let (Some(deal), Some(_)) = (&summary.week.deal, &summary.week.done) {
+        r = r.avatar(sprite(sprites::role_icon(&deal.role)));
+    }
     if core.session_state(summary) == SessionState::Working {
         r = r.status(RowStatus::Busy);
     } else if core.tasks_waiting(summary) {
@@ -533,7 +641,47 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
             .iter()
             .filter(|summary| core.session_state(summary) == state)
             .collect();
-        if !sessions.is_empty() {
+        if sessions.is_empty() {
+            continue;
+        }
+        if state == SessionState::Ended {
+            let mut ended = col()
+                .key("Ended")
+                .role("group")
+                .label(label)
+                .w_full()
+                .gap(2.0)
+                .child(
+                    SidebarHeader::new(label)
+                        .count(sessions.len())
+                        .collapsed(s.ended_collapsed)
+                        .on_toggle(|s: &mut FullUi, _| s.ended_collapsed = !s.ended_collapsed)
+                        .build(k),
+                );
+            if !s.ended_collapsed {
+                ended = ended.child(
+                    col()
+                        .key("ended-list")
+                        .role("list")
+                        .label("Ended sessions")
+                        .focus_group()
+                        .focus_follows()
+                        .w_full()
+                        .max_h(240.0)
+                        .gap(2.0)
+                        .scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })
+                        .scroll_edge_fade(16.0)
+                        .children(
+                            sessions
+                                .iter()
+                                .map(|summary| session_row(s, core, summary, k)),
+                        ),
+                );
+            }
+            sb = sb.footer(ended);
+        } else {
             sb = sb.section(
                 SidebarSection::new(label).count(sessions.len()).rows(
                     sessions
@@ -666,7 +814,7 @@ fn shell_mode(input: &str) -> Option<&'static str> {
 
 /// One slot that is Stop while the agent works on an empty field and Send otherwise, so swapping never moves the footer.
 fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
-    let empty = s.composer.text.trim().is_empty();
+    let empty = s.composer.text.trim().is_empty() && s.attachments.is_empty();
     if core.streaming && empty {
         return IconButton::new(&STOP)
             .variant(IconButtonVariant::Submit)
@@ -694,24 +842,106 @@ fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
     button.build(k).key("send")
 }
 
+/// How full the context is, measured against where pi compacts on its own: at 100% the
+/// next check compacts. Right after a compaction it shows pi's estimate of what was kept.
 fn context_meter(core: &Core, k: &Kit) -> Option<El> {
-    let percent = core.stats.context_percent.filter(|p| p.round() > 0.0)?;
+    let stats = &core.stats;
+    let percent = stats.context_percent().filter(|p| p.round() > 0.0)?;
+    let tokens = |n: f64| format!("{:.0}k", n / 1000.0);
+    let help = match (stats.reserve, stats.context_window) {
+        (Some(reserve), Some(window)) if window > reserve => format!(
+            "{} of {} tokens before pi compacts the context{}",
+            tokens(stats.context_tokens.unwrap_or_default()),
+            tokens(window - reserve),
+            if stats.predicted {
+                ", estimated after the last compaction"
+            } else {
+                ""
+            }
+        ),
+        _ => "Context used. Auto-compaction is off.".to_owned(),
+    };
     let meter = row()
         .key("context-meter")
         .gap(6.0)
         .center_y()
+        .help(help)
         .child(
-            ProgressCircle::new((percent / 100.0) as f32)
+            ProgressCircle::new((percent.min(100.0) / 100.0) as f32)
                 .size(14.0)
-                .label("Context used")
+                .label("Context used until compaction")
                 .build(k),
         )
         .child(
-            text(format!("{percent:.0}%"))
-                .font(k.ty.small.features("'tnum' 1"))
-                .color(k.c.text_muted),
+            text(format!(
+                "{}{percent:.0}%",
+                if stats.predicted { "~" } else { "" }
+            ))
+            .font(k.ty.small.features("'tnum' 1"))
+            .color(k.c.text_muted),
         );
     Some(meter)
+}
+
+const COMPOSER_SHOT: f32 = 56.0;
+
+/// The images the next prompt carries, each with a button that takes it off.
+fn attachment_strip(s: &FullUi, k: &Kit) -> Option<El> {
+    if s.attachments.is_empty() {
+        return None;
+    }
+    let tiles = s.attachments.iter().enumerate().map(|(index, shot)| {
+        let remove = IconButton::new(&REMOVE)
+            .variant(IconButtonVariant::Neutral)
+            .control_size(ControlSize::Small)
+            .label("Remove image")
+            .on_press(move |s: &mut FullUi| {
+                if index < s.attachments.len() {
+                    s.attachments.remove(index);
+                }
+            })
+            .build(k)
+            .pin(None, Some(-6.0), Some(-6.0), None);
+        col()
+            .key(format!("attachment-{index}"))
+            .child(parts::shot_tile(s, shot, COMPOSER_SHOT, k))
+            .child(remove)
+    });
+    Some(
+        row()
+            .key("attachments")
+            .w_full()
+            .gap(10.0)
+            .flex_wrap()
+            .px(8.0)
+            .pt(8.0)
+            .children(tiles),
+    )
+}
+
+/// pi's composer field: plain, growing from two lines to ten, and taking pasted images.
+fn composer_field(s: &FullUi, placeholder: &str, k: &Kit) -> El {
+    let c = &k.c;
+    let style = TextStyle {
+        line_height: (13.0f32 * 1.35 * 2.0).round() / 2.0,
+        ..k.ty.ui
+    };
+    let field = rune::text_input(&s.composer, style)
+        .key("input")
+        .w_full()
+        .color(c.text_base)
+        .placeholder(placeholder, c.text_faint)
+        .caret(c.text_base, k.selection())
+        .label(placeholder)
+        .on_edit(|s: &mut FullUi| &mut s.composer)
+        .on_submit(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false))
+        .on_input_key(composer_key)
+        .on_input_paste(composer_paste);
+    col()
+        .role("textbox")
+        .w_full()
+        .padding(8.0)
+        .child(rune::auto_grow(field, 2, 10))
 }
 
 fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
@@ -720,21 +950,14 @@ fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
         (None, _) => "What are we working on?",
         (Some(_), _) => "Reply…",
     };
-    let field = TextArea::new(&s.composer)
-        .plain()
-        .placeholder(placeholder)
-        .width(None)
-        .auto_grow(2, 10)
-        .on_edit(|s: &mut FullUi| &mut s.composer)
-        .on_submit(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false))
-        .on_key(composer_key)
-        .build(k)
-        .key("composer");
-    let frame = parts::panel(k, s.composer.focused)
+    let field = composer_field(s, placeholder, k).key("composer");
+    let mut frame = parts::panel(k, s.composer.focused || s.dropping)
         .key("composer-frame")
-        .padding(6.0)
-        .child(field)
-        .child(composer_footer(s, core, k));
+        .padding(6.0);
+    if let Some(strip) = attachment_strip(s, k) {
+        frame = frame.child(strip);
+    }
+    let frame = frame.child(field).child(composer_footer(s, core, k));
     let mut column = col().w_full().gap(8.0);
     if let Some(working) = parts::working(core, k) {
         column = column.child(working);
@@ -860,6 +1083,16 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
         bottom = bottom.child(composer(s, core, k));
     }
     let mut stage = col().w_full().h_full().min_h(0.0).clip_rounded(0.0);
+    // Images dropped anywhere on an open chat go to its composer.
+    if core.dialog.is_none() && core.t.week.done.is_none() {
+        stage = stage
+            .on_drop_files(|s: &mut FullUi, files, _| {
+                s.dropping = false;
+                attach(s, files.iter().map(|p| Shot::from_file(p)));
+            })
+            .accepts_files(is_shot_file)
+            .on_drop_hover(|s: &mut FullUi, over, _| s.dropping = over);
+    }
     if empty {
         stage = stage.child(dither::slot(dark, s.shore_motion()));
     }
@@ -1004,6 +1237,114 @@ fn roster(board: &Board, k: &Kit) -> El {
     strip
 }
 
+/// One tile per role with the agent winning it, so the week's verdict reads before the cards.
+fn leaders(board: &Board, k: &Kit) -> El {
+    let c = &k.c;
+    let numbers = k.ty.small.features("'tnum' 1");
+    let mut strip = row().key("leaders").w_full().gap(10.0).flex_wrap();
+    for table in &board.tables {
+        let lead = table.leader();
+        let label = text(table.role.to_uppercase())
+            .font(k.ty.small_medium.tracking(0.5))
+            .color(c.text_muted)
+            .truncate();
+        let body = match &lead {
+            Some(lead) => {
+                let figure = if table.fanout {
+                    format!("{}/{} won", lead.row.wins, lead.row.fanouts)
+                } else {
+                    fmt(lead.row.mean_score(), 2)
+                };
+                row()
+                    .gap(10.0)
+                    .center_y()
+                    .child(sprite(sprites::model(&lead.row.agent)))
+                    .child(
+                        col()
+                            .gap(2.0)
+                            .shrink()
+                            .min_w(0.0)
+                            .child(
+                                text(lead.row.name.clone())
+                                    .font(k.ty.ui_medium)
+                                    .color(c.text_base)
+                                    .truncate(),
+                            )
+                            .child(
+                                row()
+                                    .gap(6.0)
+                                    .child(text(figure).font(numbers).color(c.text_accent))
+                                    .child(
+                                        text(table.margin_short(&lead.margin))
+                                            .font(numbers)
+                                            .color(c.text_muted)
+                                            .truncate()
+                                            .shrink()
+                                            .min_w(0.0),
+                                    ),
+                            ),
+                    )
+            }
+            None => col()
+                .h(36.0)
+                .gap(2.0)
+                .justify_center()
+                .child(
+                    text("No leader yet")
+                        .font(k.ty.ui_medium)
+                        .color(c.text_muted)
+                        .truncate(),
+                )
+                .child(
+                    text(format!(
+                        "{} to rank",
+                        count(scoreboard::TOO_FEW, "run", "runs")
+                    ))
+                    .font(numbers)
+                    .color(c.text_faint)
+                    .truncate(),
+                ),
+        };
+        let (fill, border) = if lead.is_some() {
+            (k.alpha(c.text_accent, 0.07), k.alpha(c.text_accent, 0.35))
+        } else {
+            (c.surface_raised, c.border_weak)
+        };
+        strip = strip.child(
+            col()
+                .key(format!("lead-{}", table.role))
+                .w(150.0)
+                .grow(1.0)
+                .gap(10.0)
+                .px(12.0)
+                .py(12.0)
+                .fill(fill)
+                .border(1.0, border)
+                .radius(k.radius.md)
+                .child(label)
+                .child(body),
+        );
+    }
+    strip
+}
+
+/// A strip of tiles under a small caps label.
+fn section(label: &str, body: El, k: &Kit) -> El {
+    col()
+        .w_full()
+        .gap(10.0)
+        .child(
+            text(label.to_owned())
+                .font(k.ty.small_medium.tracking(0.5))
+                .color(k.c.text_muted),
+        )
+        .child(body)
+}
+
+fn fmt(v: Option<f64>, digits: usize) -> String {
+    v.map_or("—".to_owned(), |v| format!("{v:.digits$}"))
+}
+
 const PIPS: usize = 5;
 /// Tally marks shown before the count stands alone, so a busy agent stays on its card.
 const TALLY_MAX: usize = 20;
@@ -1049,12 +1390,13 @@ fn sheet_entry(
     table: &scoreboard::Table,
     r: &scoreboard::Row,
     rank: Option<usize>,
+    lead: Option<&scoreboard::Margin>,
     index: usize,
     k: &Kit,
 ) -> El {
     let c = &k.c;
     let figures = k.ty.small.features("'tnum' 1");
-    let leads = rank == Some(1);
+    let leads = lead.is_some();
     let ink = if rank.is_some() {
         c.text_base
     } else {
@@ -1072,9 +1414,19 @@ fn sheet_entry(
             ink
         }
     };
-    let fmt = |v: Option<f64>, d: usize| v.map_or("—".to_owned(), |v| format!("{v:.d$}"));
-
     let mut stats = col().gap(6.0);
+    if let Some(margin) = lead {
+        stats = stats.child(stat(
+            "MARGIN",
+            text(table.margin_line(margin))
+                .font(k.ty.small)
+                .color(c.text_base)
+                .wrap()
+                .shrink()
+                .min_w(0.0),
+            k,
+        ));
+    }
     if table.fanout || r.fanouts > 0 {
         let share = r.win_share().unwrap_or(0.0);
         let filled = (share * PIPS as f64).round() as usize;
@@ -1140,17 +1492,28 @@ fn sheet_entry(
     if rank.is_none() {
         title = title.child(text("too few").font(k.ty.small).color(c.text_faint));
     }
+    if leads {
+        title = title.child(
+            rune_kit::Badge::new("Leads")
+                .variant(rune_kit::BadgeVariant::Accent)
+                .build(k),
+        );
+    }
     let position = rank.map_or("–".to_owned(), |rank| rank.to_string());
     let portrait =
         sprite(sprites::model(&r.agent)).opacity(if rank.is_some() { 1.0 } else { 0.45 });
-    row()
+    let mut entry = row()
         .key(format!("{}-{index}", table.role))
         .w_full()
         .gap(12.0)
         .items_start()
         .px(16.0)
         .py(14.0)
-        .border_sides([1.0, 0.0, 0.0, 0.0], c.border_weak)
+        .border_sides([1.0, 0.0, 0.0, 0.0], c.border_weak);
+    if leads {
+        entry = entry.fill(k.alpha(c.text_accent, 0.07));
+    }
+    entry
         .child(
             row().w(18.0).pt(2.0).child(
                 text(position)
@@ -1289,7 +1652,24 @@ fn role_sheet(table: &scoreboard::Table, risen: bool, k: &Kit) -> El {
         .fill(c.surface_raised)
         .border(1.0, c.border_weak)
         .radius(k.radius.lg)
+        .clip_rounded(k.radius.lg)
         .child(header);
+    let lead = table.leader();
+    if lead.is_none() {
+        return card.child(
+            col()
+                .key("class-too-few")
+                .w_full()
+                .padding(16.0)
+                .border_sides([1.0, 0.0, 0.0, 0.0], c.border_weak)
+                .child(
+                    text("Come back when there are enough runs for this class.")
+                        .font(k.ty.small)
+                        .color(c.text_muted)
+                        .wrap(),
+                ),
+        );
+    }
     let mut rank = 0;
     for (index, r) in table.rows.iter().enumerate() {
         let place = if r.too_few() {
@@ -1298,7 +1678,11 @@ fn role_sheet(table: &scoreboard::Table, risen: bool, k: &Kit) -> El {
             rank += 1;
             Some(rank)
         };
-        card = card.child(sheet_entry(table, r, place, index, k));
+        let margin = lead
+            .as_ref()
+            .filter(|lead| std::ptr::eq(lead.row, r))
+            .map(|lead| &lead.margin);
+        card = card.child(sheet_entry(table, r, place, margin, index, k));
     }
     card
 }
@@ -1321,7 +1705,8 @@ fn scoreboard_page(board: &Board, risen: bool, k: &Kit) -> El {
         .px(28.0)
         .py(22.0)
         .child(summary)
-        .child(roster(board, k));
+        .child(section("LEADING EACH ROLE", leaders(board, k), k))
+        .child(section("CONTENDERS", roster(board, k), k));
     let mut sheets = col().w_full().gap(16.0);
     for pair in board.tables.chunks(2) {
         let mut line = row().w_full().gap(16.0).flex_wrap().items_start();
@@ -1366,6 +1751,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     };
     let mut overlays = Vec::new();
     folder_picker::build(s, k, &mut overlays);
+    viewer(s, k, &mut overlays);
     let mut window = SplitView::new(main).sidebar(
         &s.sidebar,
         |s: &mut FullUi| &mut s.sidebar,
@@ -1399,7 +1785,125 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     })
 }
 
+fn close_viewer(s: &mut FullUi) {
+    s.viewing = None;
+    s.composer.focused = true;
+}
+
+/// An image opened from its tile: as large as the window allows, never past its own size, with
+/// its format and size and a way to open it in the system's viewer to zoom. Esc, a click on
+/// it or a click beside it closes it.
+fn viewer(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
+    let Some(shot) = &s.viewing else {
+        return;
+    };
+    let c = &k.c;
+    let image = s.image(shot).filter(|image| image.error().is_none());
+    let size = shot.dimensions();
+    let picture = match &image {
+        Some(image) => {
+            let mut picture = el()
+                .key("viewer-image")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .pixels_fit(image.pixels(), rune::SurfaceFit::Fit)
+                .label(format!("{} image", shot.kind()))
+                .on_press(close_viewer);
+            // Never blown up past one image pixel per point.
+            if let Some((w, h)) = size {
+                picture = picture.max_w(w as f32).max_h(h as f32);
+            }
+            picture
+        }
+        None => col().key("viewer-image").padding(24.0).child(
+            text(format!("This {} can’t be shown here.", shot.kind()))
+                .font(k.ty.ui)
+                .color(c.text_muted),
+        ),
+    };
+    let about = match size {
+        Some((w, h)) => format!("{} · {w} × {h}", shot.kind()),
+        None => shot.kind().to_owned(),
+    };
+    let open_label = if cfg!(target_os = "macos") {
+        "Open in Preview"
+    } else {
+        "Open"
+    };
+    let bar = row()
+        .key("viewer-bar")
+        .gap(12.0)
+        .center_y()
+        .pl(12.0)
+        .pr(4.0)
+        .py(4.0)
+        .radius(k.radius.lg)
+        .fill(c.surface_raised)
+        .border(1.0, c.border_weak)
+        .child(
+            text(about)
+                .font(k.ty.small.features("'tnum' 1"))
+                .color(c.text_muted),
+        )
+        .child(
+            Button::new(open_label)
+                .variant(ButtonVariant::Ghost)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut FullUi| {
+                    let Some(shot) = s.viewing.clone() else {
+                        return;
+                    };
+                    if let Err(error) = shot.open_externally() {
+                        lock(&s.core).toast(error, "error");
+                    }
+                })
+                .build(k),
+        )
+        .child(
+            Button::new("Close")
+                .variant(ButtonVariant::Ghost)
+                .control_size(ControlSize::Small)
+                .shortcut("esc")
+                .show_shortcut()
+                .on_press(close_viewer)
+                .build(k),
+        );
+    let panel = col()
+        .key("viewer")
+        .role("dialog")
+        .label("Image")
+        .w_full()
+        .h_full()
+        .gap(12.0)
+        .items_center()
+        .justify_center()
+        .child(picture)
+        .child(bar)
+        .on_press(close_viewer)
+        .token_motion(k.motion.overlay)
+        .modal(true, close_viewer);
+    layer.push(
+        el().key("viewer-scrim")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .fill(c.scrim)
+            .token_motion(k.motion.overlay)
+            .a11y_hidden(),
+    );
+    layer.push(
+        el().key("viewer-layer")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .padding(40.0)
+            .child(panel),
+    );
+}
+
 pub fn setup(s: &mut FullUi, waker: rune::Waker) {
+    s.images = Some(ImageCache::new(waker.clone()));
     lock(&s.core).add_waker(Arc::new(move || waker()));
 }
 
@@ -1513,6 +2017,23 @@ mod tests {
     }
 
     #[test]
+    fn a_clicked_image_opens_whole_and_esc_closes_only_it() {
+        let core = core(crate::fixtures::scene_attach);
+        lock(&core).streaming = true;
+        let mut rt = window(core.clone());
+        click(&mut rt, "shot-0");
+        assert_eq!(rt.state.viewing, Some(crate::fixtures::screenshot()));
+        assert!(shows(&rt, "/viewer-bar"));
+        rt.key(Key::Escape.into());
+        rt.frame(0.016);
+        assert!(rt.state.viewing.is_none());
+        assert!(
+            lock(&core).sent_before_start().is_empty(),
+            "Esc closed the image without stopping the agent"
+        );
+    }
+
+    #[test]
     fn a_clicked_chat_is_the_next_frame() {
         let one = PathBuf::from("/fixture/one.jsonl");
         let two = PathBuf::from("/fixture/two.jsonl");
@@ -1532,6 +2053,8 @@ mod tests {
             core.sessions.push(summary(&three, &saved));
         }
         let mut rt = window(core.clone());
+        click(&mut rt, "Ended/section-header");
+        rt.frame(1.0);
         // Two live chats, then one only on disk.
         for (path, chat, started) in [
             (&one, "Rename SessionStore to Vault", 0),
@@ -1547,8 +2070,89 @@ mod tests {
             assert_eq!(in_motion(&mut rt), Vec::<String>::new(), "{chat}");
         }
         assert!(shows(&rt, "/ended"), "the saved chat shows as ended");
-        assert!(shows(&rt, &format!("/Ended/session-{}", three.display())));
+        assert!(shows(
+            &rt,
+            &format!("/Ended/ended-list/session-{}", three.display())
+        ));
         let _ = std::fs::remove_file(three);
+    }
+
+    #[test]
+    fn ended_sessions_start_collapsed_and_toggle() {
+        let core = core(crate::fixtures::scene_tasks);
+        let ended: Vec<_> = {
+            let core = lock(&core);
+            core.sessions
+                .iter()
+                .filter(|summary| core.session_state(summary) == SessionState::Ended)
+                .map(|summary| format!("/Ended/ended-list/session-{}", summary.path.display()))
+                .collect()
+        };
+        assert!(!ended.is_empty());
+        let mut rt = window(core);
+        assert!(shows(&rt, "/Ended/section-header"));
+        assert!(ended.iter().all(|path| !shows(&rt, path)));
+        assert!(shows(&rt, "/Working/section-header"));
+        assert!(shows(&rt, "/Idle/section-header"));
+
+        click(&mut rt, "Ended/section-header");
+        assert!(ended.iter().all(|path| shows(&rt, path)));
+        click(&mut rt, "Ended/section-header");
+        rt.frame(1.0);
+        assert!(ended.iter().all(|path| !shows(&rt, path)));
+        assert!(shows(&rt, "/Ended/section-header"));
+    }
+
+    #[test]
+    fn ended_section_is_anchored_to_the_bottom_and_history_is_bounded() {
+        let core = core(crate::fixtures::scene_tasks);
+        {
+            let mut core = lock(&core);
+            let ended = core
+                .sessions
+                .iter()
+                .find(|summary| core.session_state(summary) == SessionState::Ended)
+                .unwrap()
+                .clone();
+            for n in 0..30 {
+                let mut summary = ended.clone();
+                summary.path = PathBuf::from(format!("/fixture/ended-{n}.jsonl"));
+                core.sessions.push(summary);
+            }
+        }
+        let mut rt = window(core);
+        for expanded in [false, true, false] {
+            if expanded != !rt.state.ended_collapsed {
+                click(&mut rt, "Ended/section-header");
+                rt.frame(1.0);
+            }
+            let elements = rt.elements();
+            let sidebar = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("sidebar"))
+                .unwrap();
+            let footer = elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some("sidebar-footer"))
+                .unwrap();
+            assert!(
+                (footer.rect[1] + footer.rect[3] - sidebar.rect[1] - sidebar.rect[3]).abs() < 1.0
+            );
+            if expanded {
+                let list = elements
+                    .iter()
+                    .find(|e| e.key.as_deref() == Some("ended-list"))
+                    .unwrap();
+                assert!(list.rect[3] <= 240.0);
+                assert!(list.rect[3] > 200.0);
+            } else {
+                let header = elements
+                    .iter()
+                    .find(|e| e.path.ends_with("/Ended/section-header"))
+                    .unwrap();
+                assert!(sidebar.rect[1] + sidebar.rect[3] - header.rect[1] - header.rect[3] < 12.0);
+            }
+        }
     }
 
     /// The new task is the frame right after `leave` asks for it.
@@ -1598,6 +2202,66 @@ mod tests {
         rt.frame(0.016);
         assert_eq!(in_motion(&mut rt), Vec::<String>::new());
         assert!(shows(&rt, "/item-119-md2"), "it opens at the latest answer");
+    }
+
+    #[test]
+    fn scoreboard_shows_one_placeholder_per_class_until_it_has_a_leader() {
+        for fanout in [false, true] {
+            for runs in 0..=scoreboard::TOO_FEW {
+                let table = scoreboard::Table {
+                    role: "builder".into(),
+                    criteria: String::new(),
+                    fanout,
+                    rows: vec![
+                        scoreboard::Row {
+                            name: "Agent".into(),
+                            runs,
+                            rated: runs,
+                            score_sum: 5.0 * runs as f64,
+                            fanouts: if fanout { runs } else { 0 },
+                            wins: if fanout { runs } else { 0 },
+                            ..Default::default()
+                        },
+                        scoreboard::Row {
+                            name: "Other agent".into(),
+                            runs: 2,
+                            rated: 2,
+                            score_sum: 8.0,
+                            fanouts: if fanout { 2 } else { 0 },
+                            wins: 0,
+                            ..Default::default()
+                        },
+                    ],
+                    decisions: Default::default(),
+                };
+                let mut rt = Runtime::new(
+                    table,
+                    |table, _| role_sheet(table, true, rune_theme_opencode::kit(true)),
+                    (420.0, 1000.0),
+                    Env::new(true, 1.0),
+                );
+                rt.frame(0.0);
+                let labels: Vec<_> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+                let has = |label: &str| labels.iter().any(|text| text == label);
+                let ranked = runs >= scoreboard::TOO_FEW;
+                assert!(has("BUILDER"));
+                assert_eq!(has("Agent"), ranked);
+                assert_eq!(has("Other agent"), ranked);
+                assert_eq!(
+                    labels
+                        .iter()
+                        .filter(|text| text.as_str()
+                            == "Come back when there are enough runs for this class.")
+                        .count(),
+                    usize::from(!ranked),
+                );
+                for label in ["SCORE", "RUNS", "NAIL"] {
+                    assert_eq!(has(label), ranked, "{runs} runs, fanout={fanout}: {label}");
+                }
+                assert_eq!(has("WINS"), ranked && fanout);
+                assert_eq!(has("too few"), ranked);
+            }
+        }
     }
 
     #[test]

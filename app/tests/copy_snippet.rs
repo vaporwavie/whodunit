@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rune::{Env, Runtime, clipboard};
 use whodunit::config::AppConfig;
@@ -45,6 +46,13 @@ fn copy(rt: &mut Runtime<FullUi>, index: usize) {
     rt.frame(0.0);
 }
 
+fn copied_labels(rt: &Runtime<FullUi>) -> usize {
+    rt.elements()
+        .iter()
+        .filter(|el| el.text.as_deref() == Some("Copied"))
+        .count()
+}
+
 #[test]
 fn copy_preserves_code_without_prose_or_fences() {
     let source = "fn main() {\n\tprintln!(\"Olá 🦀\");\n\n}";
@@ -56,12 +64,11 @@ fn copy_preserves_code_without_prose_or_fences() {
     rt.use_clipboard(&board);
     copy(&mut rt, 0);
     assert_eq!(board.content().unwrap().text(), source);
-    assert!(
-        lock(&core)
-            .toasts
-            .iter()
-            .any(|t| t.text == "Snippet copied")
-    );
+    assert!(lock(&core).toasts.is_empty());
+    assert_eq!(copied_labels(&rt), 1);
+    std::thread::sleep(Duration::from_millis(1550));
+    rt.frame(0.016);
+    assert_eq!(copied_labels(&rt), 0);
 }
 
 #[test]
@@ -75,6 +82,7 @@ fn each_code_block_copies_its_own_source() {
     for (i, expected) in ["first", "second", "echo third"].iter().enumerate() {
         copy(&mut rt, i);
         assert_eq!(board.content().unwrap().text(), *expected);
+        assert_eq!(copied_labels(&rt), i + 1);
     }
 }
 
@@ -100,6 +108,7 @@ fn streaming_copy_uses_the_latest_code() {
 fn fanout_snippets_copy_independently() {
     let (_, mut rt) = window(vec![Item::Fanout {
         prompt: None,
+        shots: Vec::new(),
         answers: ["A", "B"]
             .into_iter()
             .map(|label| FanAnswer {
@@ -116,5 +125,6 @@ fn fanout_snippets_copy_independently() {
     for (i, expected) in ["echo A", "echo B"].iter().enumerate() {
         copy(&mut rt, i);
         assert_eq!(board.content().unwrap().text(), *expected);
+        assert_eq!(copied_labels(&rt), i + 1);
     }
 }

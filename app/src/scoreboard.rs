@@ -109,6 +109,101 @@ pub struct Table {
     pub decisions: Decisions,
 }
 
+impl Table {
+    /// The number this role ranks by: mean score, or the share of fan-outs won.
+    pub fn rank_value(&self, r: &Row) -> Option<f64> {
+        if self.fanout {
+            r.win_share()
+        } else {
+            r.mean_score()
+        }
+    }
+
+    /// The agent winning this role: the top row with enough runs and something to rank by.
+    /// None until one has `TOO_FEW` runs.
+    pub fn leader(&self) -> Option<Lead<'_>> {
+        let mut ranked = self
+            .rows
+            .iter()
+            .filter_map(|r| Some((r, self.rank_value(r)?)))
+            .filter(|(r, _)| !r.too_few());
+        let (row, value) = ranked.next()?;
+        let margin = match ranked.next() {
+            None => Margin::Alone,
+            Some((next, v)) if value - v < 1e-9 => Margin::Tied {
+                runner_up: next.name.clone(),
+                cheaper: row.cost_per_run().unwrap_or(f64::MAX)
+                    < next.cost_per_run().unwrap_or(f64::MAX),
+            },
+            Some((next, v)) => Margin::Ahead {
+                runner_up: next.name.clone(),
+                by: value - v,
+            },
+        };
+        Some(Lead { row, margin })
+    }
+
+    /// The leader's ranking number: "4.25 mean score" or "5/8 fan-outs won".
+    pub fn lead_figure(&self, r: &Row) -> String {
+        if self.fanout {
+            format!("{}/{} fan-outs won", r.wins, r.fanouts)
+        } else {
+            format!("{} mean score", fmt(r.mean_score(), 2, ""))
+        }
+    }
+
+    /// The gap in this role's units: "0.58" points of mean score, or "38 pts" of win share.
+    fn gap(&self, by: f64) -> String {
+        if self.fanout {
+            format!("{:.0} pts", by * 100.0)
+        } else {
+            format!("{by:.2}")
+        }
+    }
+
+    /// How far the leader stands ahead, as a sentence: "ahead of Gemini 4 Argon by 0.58".
+    pub fn margin_line(&self, margin: &Margin) -> String {
+        match margin {
+            Margin::Alone => "the only agent ranked so far".to_owned(),
+            Margin::Ahead { runner_up, by } => {
+                format!("ahead of {runner_up} by {}", self.gap(*by))
+            }
+            Margin::Tied {
+                runner_up,
+                cheaper: true,
+            } => format!("level with {runner_up}, and cheaper"),
+            Margin::Tied { runner_up, .. } => format!("level with {runner_up}"),
+        }
+    }
+
+    /// The same, short enough for a tile: "+0.58", "+38 pts", "tied, cheaper" or "unopposed".
+    pub fn margin_short(&self, margin: &Margin) -> String {
+        match margin {
+            Margin::Alone => "unopposed".to_owned(),
+            Margin::Ahead { by, .. } => format!("+{}", self.gap(*by)),
+            Margin::Tied { cheaper: true, .. } => "tied, cheaper".to_owned(),
+            Margin::Tied { .. } => "tied".to_owned(),
+        }
+    }
+}
+
+/// How far a role's leader stands ahead of the next ranked agent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Margin {
+    /// No other agent has enough runs to rank.
+    Alone,
+    /// Ahead by `by`: mean score points, or win share (0 to 1) for fan-out roles.
+    Ahead { runner_up: String, by: f64 },
+    /// Level on the ranking number; the cheaper agent leads.
+    Tied { runner_up: String, cheaper: bool },
+}
+
+#[derive(Clone, Debug)]
+pub struct Lead<'a> {
+    pub row: &'a Row,
+    pub margin: Margin,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Board {
     pub tables: Vec<Table>,
@@ -320,7 +415,26 @@ pub fn markdown(board: &Board) -> String {
     if let Some(line) = board.decisions.line() {
         out.push_str(&format!("\nRole decided by: {line}.\n"));
     }
+    if !board.tables.is_empty() {
+        out.push_str("\n## Leaders\n\n| role | leader | ranked by | lead |\n|---|---|---|---|\n");
+        for table in &board.tables {
+            match table.leader() {
+                Some(lead) => out.push_str(&format!(
+                    "| {} | **{}** | {} | {} |\n",
+                    table.role,
+                    lead.row.name,
+                    table.lead_figure(lead.row),
+                    table.margin_line(&lead.margin),
+                )),
+                None => out.push_str(&format!(
+                    "| {} | — | — | no agent has {TOO_FEW} runs yet |\n",
+                    table.role
+                )),
+            }
+        }
+    }
     for table in &board.tables {
+        let leader = table.leader().map(|lead| lead.row.agent.clone());
         let ranked_by = if table.fanout {
             "fan-out win share"
         } else {
@@ -334,6 +448,8 @@ pub fn markdown(board: &Board) -> String {
         for row in &table.rows {
             let name = if row.too_few() {
                 format!("{} *(too few)*", row.name)
+            } else if leader.as_ref() == Some(&row.agent) {
+                format!("**{}** *(leads)*", row.name)
             } else {
                 row.name.clone()
             };
@@ -355,4 +471,115 @@ pub fn markdown(board: &Board) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, runs: usize, score_sum: f64, cost: f64, fanouts: usize, wins: usize) -> Row {
+        Row {
+            agent: name.to_owned(),
+            name: name.to_owned(),
+            runs,
+            rated: runs,
+            score_sum,
+            costs: vec![cost; runs],
+            fanouts,
+            wins,
+            ..Row::default()
+        }
+    }
+
+    fn table(fanout: bool, rows: Vec<Row>) -> Table {
+        Table {
+            role: "builder".to_owned(),
+            criteria: String::new(),
+            fanout,
+            rows,
+            decisions: Decisions::default(),
+        }
+    }
+
+    #[test]
+    fn the_leader_is_ahead_of_the_next_ranked_agent() {
+        let t = table(
+            false,
+            vec![
+                row("Opus", 4, 18.0, 0.4, 0, 0),
+                row("Sol", 3, 11.0, 0.1, 0, 0),
+            ],
+        );
+        let lead = t.leader().unwrap();
+        assert_eq!(lead.row.name, "Opus");
+        assert_eq!(t.margin_line(&lead.margin), "ahead of Sol by 0.83");
+        assert_eq!(t.margin_short(&lead.margin), "+0.83");
+        assert_eq!(t.lead_figure(lead.row), "4.50 mean score");
+    }
+
+    #[test]
+    fn too_few_runs_never_lead_or_trail() {
+        let t = table(
+            false,
+            vec![
+                row("Opus", 3, 12.0, 0.4, 0, 0),
+                row("Sol", 2, 10.0, 0.1, 0, 0),
+            ],
+        );
+        let lead = t.leader().unwrap();
+        assert_eq!(lead.margin, Margin::Alone);
+        assert_eq!(t.margin_short(&lead.margin), "unopposed");
+        assert!(
+            table(false, vec![row("Sol", 2, 10.0, 0.1, 0, 0)])
+                .leader()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_cheaper_agent() {
+        let t = table(
+            false,
+            vec![
+                row("Kimi", 3, 12.0, 0.02, 0, 0),
+                row("Opus", 3, 12.0, 0.4, 0, 0),
+            ],
+        );
+        assert_eq!(
+            t.margin_line(&t.leader().unwrap().margin),
+            "level with Opus, and cheaper"
+        );
+    }
+
+    #[test]
+    fn fanout_roles_lead_by_win_share() {
+        let t = table(
+            true,
+            vec![
+                row("Astra", 8, 30.0, 0.06, 8, 5),
+                row("Argon", 8, 34.0, 0.02, 8, 3),
+            ],
+        );
+        let lead = t.leader().unwrap();
+        assert_eq!(t.lead_figure(lead.row), "5/8 fan-outs won");
+        assert_eq!(t.margin_line(&lead.margin), "ahead of Argon by 25 pts");
+    }
+
+    #[test]
+    fn markdown_names_each_leader() {
+        let board = Board {
+            tables: vec![table(
+                false,
+                vec![
+                    row("Opus", 4, 18.0, 0.4, 0, 0),
+                    row("Sol", 3, 11.0, 0.1, 0, 0),
+                ],
+            )],
+            runs: 7,
+            decisions: Decisions::default(),
+        };
+        let md = markdown(&board);
+        assert!(md.contains("| builder | **Opus** | 4.50 mean score | ahead of Sol by 0.83 |"));
+        assert!(md.contains("| **Opus** *(leads)* | 4 |"));
+    }
 }

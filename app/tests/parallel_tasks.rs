@@ -126,6 +126,7 @@ fn run_chats(root: &Path) {
     let mut ui = FullUi::new(shared.clone());
     full::poll(&mut ui, 0.0, &mut Tx::default());
     ui.composer.replace_text("unsent follow-up for A");
+    ui.attachments = vec![whodunit::fixtures::screenshot()];
     wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
     let a = PathBuf::from(lock(&shared).session_file.clone().unwrap());
     let a_id = lock(&shared).task_id();
@@ -134,7 +135,7 @@ fn run_chats(root: &Path) {
     navigate(&shared, Leave::New);
     full::poll(&mut ui, 0.0, &mut Tx::default());
     assert!(
-        ui.composer.text.is_empty(),
+        ui.composer.text.is_empty() && ui.attachments.is_empty(),
         "a new task starts with an empty composer"
     );
     ui.composer.replace_text("unsent follow-up for B");
@@ -160,6 +161,7 @@ fn run_chats(root: &Path) {
     navigate(&shared, Leave::Open(a.clone()));
     full::poll(&mut ui, 0.0, &mut Tx::default());
     assert_eq!(ui.composer.text, "unsent follow-up for A");
+    assert_eq!(ui.attachments, [whodunit::fixtures::screenshot()]);
     assert_eq!(lock(&shared).task_id(), a_id, "reuse A's process");
     assert_eq!(answer(&lock(&shared)), "task A");
     assert!(lock(&shared).reveal().is_none());
@@ -301,4 +303,47 @@ fn cannot_start(root: &Path) {
             .is_some_and(|e| e.contains("no-pi-here"))
     );
     assert!(core.pending_prompt.is_none(), "nothing is left classifying");
+}
+
+#[test]
+fn an_image_goes_out_with_its_prompt_and_comes_back_in_the_chat() {
+    isolated(
+        "an_image_goes_out_with_its_prompt_and_comes_back_in_the_chat",
+        send_image,
+    );
+}
+
+#[cfg(unix)]
+fn send_image(root: &Path) {
+    let shared = app(root);
+    let shot = whodunit::fixtures::screenshot();
+    lock(&shared).request_leave(Leave::New);
+    start_unstarted(&shared);
+    wait(&shared, |core| core.ready);
+    // A shell command doesn't take images, so the composer keeps them.
+    assert!(!lock(&shared).submit_with("!true", false, std::slice::from_ref(&shot)));
+    assert!(lock(&shared).submit_with("", false, std::slice::from_ref(&shot)));
+    assert_eq!(lock(&shared).pending_shots, std::slice::from_ref(&shot));
+    wait(&shared, |core| {
+        core.t
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::User { shots, .. } if *shots == [shot.clone()]))
+    });
+    let path = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+    std::fs::write(path.with_extension("release"), "").unwrap();
+    wait(&shared, |core| !core.streaming && core.t.has_answer());
+    // Context counts arrive with the turn, not just at its end, and read against the
+    // point where pi compacts (272k window, 16k reserve by default).
+    let percent = lock(&shared).stats.context_percent().unwrap();
+    assert!((percent - 30_000.0 / (272_000.0 - 16_384.0) * 100.0).abs() < 0.01);
+
+    // Reopened from its file, the image is still there.
+    let saved = whodunit::sessions::transcript(&path).unwrap();
+    assert!(
+        saved
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::User { shots, .. } if *shots == [shot.clone()]))
+    );
 }

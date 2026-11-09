@@ -2,7 +2,7 @@
 
 use crate::core::{Command, Core, Dialog, DialogKind, Shared, lock};
 use crate::sessions::Summary;
-use crate::transcript::{Block, Deal, Done, END_TITLE, FanAnswer, Item, ToolRun, Transcript};
+use crate::transcript::{Block, Deal, Done, END_TITLE, FanAnswer, Item, Shot, ToolRun, Transcript};
 
 fn deal(role: &str, size: &str) -> Option<Deal> {
     Some(Deal {
@@ -42,9 +42,21 @@ fn sidebar(core: &mut Core) {
     core.cwd = crate::config::home().join("Workspace/whodunit");
 }
 
+/// `tokens` in the virtual model's 272k window, with pi's default reserve.
+fn context(core: &mut Core, tokens: f64) {
+    core.stats.context_tokens = Some(tokens);
+    core.stats.context_window = Some(272_000.0);
+    core.stats.reserve = Some(16_384.0);
+}
+
+/// A small screenshot, for prompts with images.
+pub fn screenshot() -> Shot {
+    Shot::from_bytes(&include_bytes!("../assets/fixtures/screenshot.png")[..]).expect("a PNG")
+}
+
 fn chat(core: &mut Core) {
     core.t.items = vec![
-        Item::User("Rename `SessionStore` to `Vault` across the app and keep the tests green.".into()),
+        Item::user("Rename `SessionStore` to `Vault` across the app and keep the tests green."),
         Item::Assistant {
             blocks: vec![
                 Some(crate::transcript::Block::Thinking("Find every reference first.".into())),
@@ -66,7 +78,7 @@ fn chat(core: &mut Core) {
     );
     core.t.week.deal = deal("errand-boy", "S");
     core.t.first_prompt = Some("Rename SessionStore to Vault".into());
-    core.stats.context_percent = Some(12.0);
+    context(core, 30_000.0);
     core.stats.cost = 0.084;
 }
 
@@ -130,10 +142,26 @@ pub fn scene_reveal(shared: &Shared) {
     );
 }
 
+/// A prompt sent with a screenshot, just after a compaction: the meter shows pi's estimate of
+/// what the compaction kept. The window adds images waiting in the composer.
+pub fn scene_attach(shared: &Shared) {
+    let mut core = lock(shared);
+    chat(&mut core);
+    sidebar(&mut core);
+    core.t.items.push(Item::Notice("Context compacted".into()));
+    core.t.items.push(Item::User {
+        text: "The empty state looks off. Match the spacing in this screenshot.".into(),
+        shots: vec![screenshot()],
+    });
+    context(&mut core, 24_000.0);
+    core.stats.predicted = true;
+}
+
 pub fn scene_fanout(shared: &Shared) {
     let mut core = lock(shared);
     core.t.items = vec![Item::Fanout {
         prompt: Some("Write a two-line release note for the scoreboard page.".into()),
+        shots: Vec::new(),
         answers: vec![
             FanAnswer { label: "A".into(), ok: true, error: None, text: "**The scoreboard is here.** Every rated task, grouped by role, so you can see which agent earned its seat.".into() },
             FanAnswer { label: "B".into(), ok: true, error: None, text: "See who won each role this week.\nRatings, cost and minutes, side by side.".into() },
@@ -182,7 +210,7 @@ const DEADLINE_TEST: &str = "use uploader::{Uploader, UploadError};\n\n#[tokio::
 pub fn scene_run(shared: &Shared) {
     let mut core = lock(shared);
     core.t.items = vec![
-        Item::User("The uploader gives up on the first 503. Retry it with backoff, but never retry a 4xx.".into()),
+        Item::user("The uploader gives up on the first 503. Retry it with backoff, but never retry a 4xx."),
         Item::Assistant {
             blocks: vec![
                 Some(Block::Thinking("Read the client before touching it.".into())),
@@ -205,7 +233,7 @@ pub fn scene_run(shared: &Shared) {
             running: false,
         },
         Item::Notice("Context compacted".into()),
-        Item::User("Cap the total wait at 30 seconds and log each retry at warn.".into()),
+        Item::user("Cap the total wait at 30 seconds and log each retry at warn."),
         Item::Assistant {
             blocks: vec![
                 Some(Block::Thinking("Thread a deadline through the loop.".into())),
@@ -279,7 +307,7 @@ pub fn scene_run(shared: &Shared) {
     core.t.first_prompt = Some("Retry uploads with backoff".into());
     core.streaming = true;
     core.queue = (Vec::new(), vec!["Then add a test for the deadline.".into()]);
-    core.stats.context_percent = Some(41.0);
+    context(&mut core, 105_000.0);
     core.stats.cost = 0.312;
     sidebar(&mut core);
     core.sessions[0].title = "Retry uploads with backoff".into();
@@ -298,7 +326,7 @@ pub fn scene_wide(shared: &Shared) {
         .join("\n");
     core.t
         .items
-        .push(Item::User("Where does pi keep its cache settings?".into()));
+        .push(Item::user("Where does pi keep its cache settings?"));
     core.t.items.push(Item::Assistant {
         blocks: vec![
             tool("w1", "bash", "rg -n 'cache|compact' ~/.local/share/fnm/node-versions/v24.21.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks"),
@@ -340,7 +368,7 @@ pub fn scene_long(shared: &Shared) {
     core.t.items = (0..60)
         .flat_map(|n| {
             turn.iter().cloned().map(move |item| match item {
-                Item::User(prompt) => Item::User(format!("{prompt} (turn {n})")),
+                Item::User { text, shots } => Item::User { text: format!("{text} (turn {n})"), shots },
                 Item::Assistant { blocks, streaming, error } => Item::Assistant {
                     blocks: blocks.into_iter().map(|b| match b {
                         Some(crate::transcript::Block::Text(t)) => Some(crate::transcript::Block::Text(format!("{t}\n\n- turn {n}, step one\n- turn {n}, step two\n\n> quoted line {n}"))),
@@ -365,7 +393,7 @@ pub fn scene_growing(shared: &Shared) {
             lock(&shared)
                 .t
                 .items
-                .push(Item::User(format!("streamed line {n}")));
+                .push(Item::user(format!("streamed line {n}")));
             lock(&shared).toast(format!("tick {n}"), "info");
         }
     });

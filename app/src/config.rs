@@ -37,6 +37,54 @@ pub fn session_dir(cwd: &Path) -> PathBuf {
     sessions_root().join(format!("--{encoded}--"))
 }
 
+/// pi's default `compaction.reserveTokens`.
+const DEFAULT_RESERVE_TOKENS: f64 = 16_384.0;
+/// The model pi keys compaction overrides by: the selection, not the model it routes to.
+const SELECTED_MODEL: &str = "whodunit/auto";
+
+/// The free tokens below which pi compacts a session in `cwd` on its own, read the way pi
+/// reads them: the project's `.pi/settings.json` over the global one, then the override for
+/// `whodunit/auto`, the plain setting, the default. `None` when auto-compaction is off.
+pub fn compaction_reserve(cwd: &Path) -> Option<f64> {
+    let read = |path: PathBuf| {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("compaction").cloned())
+            .unwrap_or_default()
+    };
+    let mut compaction = read(home().join(".pi/agent/settings.json"));
+    merge(&mut compaction, read(cwd.join(".pi/settings.json")));
+    if compaction
+        .get("enabled")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        return None;
+    }
+    let tokens = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_f64);
+    let overridden = compaction
+        .get("modelOverrides")
+        .and_then(|o| o.get(SELECTED_MODEL))
+        .and_then(|o| o.get("reserveTokens"));
+    tokens(overridden)
+        .or_else(|| tokens(compaction.get("reserveTokens")))
+        .or(Some(DEFAULT_RESERVE_TOKENS))
+}
+
+/// Deep-merges `over` into `base`, objects key by key, as pi layers project settings.
+fn merge(base: &mut serde_json::Value, over: serde_json::Value) {
+    match (base, over) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(over)) => {
+            for (key, value) in over {
+                merge(base.entry(key).or_insert(serde_json::Value::Null), value);
+            }
+        }
+        (base, over) if !over.is_null() => *base = over,
+        _ => {}
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct AppConfig {
     #[serde(default)]

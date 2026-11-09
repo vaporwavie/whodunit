@@ -1,5 +1,5 @@
-//! Pixel sprites for the scoreboard: one per role, model and role decider, keyed by role name,
-//! agent id and deal source, the first two with a `fallback`. The art lives in `assets/sprites/*.json`.
+//! Pixel sprites for the scoreboard, in `assets/sprites/*.json`. Model art has stable keys;
+//! `model-aliases.json` maps agent ids to those keys without changing scoreboard identity.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -70,6 +70,10 @@ static ROLES: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/roles.json"), 4));
 static MODELS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 3));
+static MODEL_ALIASES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../assets/sprites/model-aliases.json"))
+        .expect("model aliases are checked in and valid")
+});
 static DECIDERS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/deciders.json"), 3));
 
@@ -82,7 +86,8 @@ pub fn role(name: &str) -> &'static Art {
 }
 
 pub fn model(agent: &str) -> &'static Art {
-    pick(&MODELS, agent)
+    let key = MODEL_ALIASES.get(agent).map_or("fallback", String::as_str);
+    &MODELS[key]
 }
 
 /// The deal source's icon (`jev`, `picker`, `forced`, `fallback`); unknown sources count as
@@ -91,4 +96,87 @@ pub fn decider(source: &str) -> &'static Art {
     DECIDERS
         .get(source)
         .unwrap_or_else(|| &DECIDERS["fallback"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ptr;
+
+    #[test]
+    fn model_aliases_share_the_expected_art() {
+        for (key, agents) in [
+            ("opus", vec!["anthropic/claude-opus-5-5"]),
+            (
+                "sol",
+                vec!["openai/gpt-6.1-sol", "openai-codex/gpt-6.1-sol"],
+            ),
+            (
+                "astra",
+                vec!["openai/gpt-6-astra", "openai-codex/gpt-6-astra"],
+            ),
+            (
+                "gemini",
+                vec!["google/gemini-4-argon", "radius/gemini-4-argon"],
+            ),
+            (
+                "kimi",
+                vec![
+                    "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
+                    "radius/kimi-k3.1-pro",
+                ],
+            ),
+        ] {
+            for agent in agents {
+                assert!(ptr::eq(model(agent), &MODELS[key]), "{agent} -> {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_model_alias_names_existing_art() {
+        for (agent, key) in MODEL_ALIASES.iter() {
+            assert_ne!(key, "fallback", "{agent} explicitly names fallback art");
+            assert!(MODELS.contains_key(key), "{agent} names missing art {key}");
+        }
+    }
+
+    #[test]
+    fn example_contenders_have_sprites_and_current_fixture_ids() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../../extension/roles.example.json")).unwrap();
+        let board = crate::fixtures::board();
+        for role in config["roles"].as_object().unwrap().values() {
+            for agent in role["contenders"].as_array().unwrap() {
+                let agent = agent.as_str().unwrap();
+                assert!(
+                    !ptr::eq(model(agent), &MODELS["fallback"]),
+                    "{agent} has no sprite alias"
+                );
+                assert!(
+                    board
+                        .tables
+                        .iter()
+                        .flat_map(|t| &t.rows)
+                        .any(|r| r.agent == agent),
+                    "the board fixture does not exercise {agent}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unlisted_models_use_fallback_without_guessing() {
+        for agent in [
+            "",
+            "unknown/model",
+            "other/gpt-6.1-sol",
+            "openai/gpt-6.1-sol-preview",
+            "fireworks/kimi-k3.1-pro",
+            "GPT-6.1 Sol",
+            "sol",
+        ] {
+            assert!(ptr::eq(model(agent), &MODELS["fallback"]), "{agent}");
+        }
+    }
 }

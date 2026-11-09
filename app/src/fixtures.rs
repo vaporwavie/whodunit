@@ -395,10 +395,10 @@ fn board_row(
 ) -> crate::scoreboard::Row {
     let agent = match name {
         "Opus 5.5" => "anthropic/claude-opus-5-5",
-        "GPT-6.1 Sol" => "openai-codex/gpt-6.1-sol",
-        "GPT-6 Astra" => "openai-codex/gpt-6-astra",
-        "Gemini 4 Argon" => "radius/gemini-4-argon",
-        "Kimi K3.1 Pro" => "radius/kimi-k3.1-pro",
+        "GPT-6.1 Sol" => "openai/gpt-6.1-sol",
+        "GPT-6 Astra" => "openai/gpt-6-astra",
+        "Gemini 4 Argon" => "google/gemini-4-argon",
+        "Kimi K3.1 Pro" => "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
         other => other,
     };
     crate::scoreboard::Row {

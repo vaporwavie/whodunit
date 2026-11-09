@@ -1,5 +1,5 @@
 {
-  "anthropic/claude-opus-5-5": {
+  "opus": {
     "palette": {
       ".": null,
       "h": "#e2d9c6",
@@ -22,7 +22,7 @@
       "..ssss......"
     ]
   },
-  "openai-codex/gpt-6.1-sol": {
+  "sol": {
     "palette": {
       ".": null,
       "h": "#dbd6cb",
@@ -45,7 +45,7 @@
       ".....aa....."
     ]
   },
-  "openai-codex/gpt-6-astra": {
+  "astra": {
     "palette": {
       ".": null,
       "h": "#dfe3e6",
@@ -68,7 +68,7 @@
       ".....fs....."
     ]
   },
-  "radius/gemini-4-argon": {
+  "gemini": {
     "palette": {
       ".": null,
       "h": "#e0dccf",
@@ -91,7 +91,7 @@
       "a..........a"
     ]
   },
-  "radius/kimi-k3.1-pro": {
+  "kimi": {
     "palette": {
       ".": null,
       "h": "#e6e2d6",

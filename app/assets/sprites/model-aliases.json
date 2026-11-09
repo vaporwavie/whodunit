@@ -1,0 +1,11 @@
+{
+  "anthropic/claude-opus-5-5": "opus",
+  "openai/gpt-6.1-sol": "sol",
+  "openai-codex/gpt-6.1-sol": "sol",
+  "openai/gpt-6-astra": "astra",
+  "openai-codex/gpt-6-astra": "astra",
+  "google/gemini-4-argon": "gemini",
+  "radius/gemini-4-argon": "gemini",
+  "fireworks/accounts/fireworks/models/kimi-k3p1-pro": "kimi",
+  "radius/kimi-k3.1-pro": "kimi"
+}

@@ -393,8 +393,16 @@ fn board_row(
     fanouts: usize,
     wins: usize,
 ) -> crate::scoreboard::Row {
+    let agent = match name {
+        "Opus 5.5" => "anthropic/claude-opus-5-5",
+        "GPT-6.1 Sol" => "openai-codex/gpt-6.1-sol",
+        "GPT-6 Astra" => "openai-codex/gpt-6-astra",
+        "Gemini 4 Argon" => "radius/gemini-4-argon",
+        "Kimi K3.1 Pro" => "radius/kimi-k3.1-pro",
+        other => other,
+    };
     crate::scoreboard::Row {
-        agent: name.into(),
+        agent: agent.into(),
         name: name.into(),
         runs,
         rated: runs,
@@ -421,7 +429,25 @@ pub fn board() -> crate::scoreboard::Board {
         },
         tables: vec![
             Table {
+                role: "errand-boy".into(),
+                criteria: "A chore under about 15 minutes: scaffolding, renames, shell or file work, brute-force repetition".into(),
+                fanout: false,
+                decisions: Decisions {
+                    jev: 6,
+                    picker: 1,
+                    forced: 0,
+                    fallback: 0,
+                },
+                rows: vec![
+                    board_row("Kimi K3.1 Pro", 4, 3, 17.0, &[1.5, 2.0], 0.018, 0, 0),
+                    board_row("Gemini 4 Argon", 3, 2, 11.0, &[2.5], 0.012, 0, 0),
+                    board_row("Opus 5.5", 1, 1, 5.0, &[1.0], 0.21, 0, 0),
+                    board_row("GPT-6.1 Sol", 0, 0, 0.0, &[], 0.0, 0, 0),
+                ],
+            },
+            Table {
                 role: "builder".into(),
+                criteria: "The goal is clear and the job is writing code in a repo".into(),
                 fanout: false,
                 decisions: Decisions {
                     jev: 14,
@@ -445,7 +471,39 @@ pub fn board() -> crate::scoreboard::Board {
                 ],
             },
             Table {
+                role: "brainiac".into(),
+                criteria: "There is no clear path yet: diagnosing, designing architecture, debugging something nasty, planning".into(),
+                fanout: false,
+                decisions: Decisions {
+                    jev: 4,
+                    picker: 1,
+                    forced: 1,
+                    fallback: 0,
+                },
+                rows: vec![
+                    board_row("GPT-6 Astra", 3, 3, 14.0, &[8.0, 12.5], 1.21, 0, 0),
+                    board_row("Opus 5.5", 3, 2, 12.0, &[6.0], 0.88, 0, 0),
+                ],
+            },
+            Table {
+                role: "scout".into(),
+                criteria: "Research or comparison that needs the web".into(),
+                fanout: true,
+                decisions: Decisions {
+                    jev: 5,
+                    picker: 0,
+                    forced: 0,
+                    fallback: 0,
+                },
+                rows: vec![
+                    board_row("Opus 5.5", 5, 4, 21.0, &[3.0], 0.31, 5, 3),
+                    board_row("Kimi K3.1 Pro", 5, 3, 18.0, &[3.5], 0.05, 5, 1),
+                    board_row("GPT-6 Astra", 5, 3, 17.0, &[4.0], 0.22, 5, 1),
+                ],
+            },
+            Table {
                 role: "scribe".into(),
+                criteria: "Prose: posts, docs, messages, copy".into(),
                 fanout: true,
                 decisions: Decisions {
                     jev: 10,

@@ -122,7 +122,7 @@ node scoreboard/scoreboard.mjs --since 2026-11-09 [--until 2026-11-14]
 
 You get one table per role: runs, nailed %, mean score, median minutes you spent, cost per run and fan-out wins. Above the tables, and under each role, a line shows who decided the role: Jev, the picker, `/role` or the fallback. Normal roles rank by mean score, and fan-out roles by share of fan-outs won. Ties go to the cheaper agent, and rows with fewer than 3 runs are marked *too few*. Minutes and cost come from pi's session files, with idle gaps capped at 10 minutes. Cost is at list price, so metered and subscription models are compared on the same terms.
 
-The app has the same board on its Scoreboard page.
+The app's Scoreboard page shows the same numbers as one card per role, with a pixel sprite for each model and role.
 
 ## Laws
 

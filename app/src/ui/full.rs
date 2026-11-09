@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rune::{
-    Cx, El, Family, Icon, Key, KeyEvent, ScrollSpec, Spring, TextEdit, TextStyle, Transition, Tx,
-    col, row, text,
+    AnimExt, Color, Cx, El, Family, Icon, Key, KeyEvent, ScrollSpec, Shape, Spring, TextEdit,
+    TextStyle, Transition, Tx, col, el, row, text,
 };
 use rune_kit::diff::DiffState;
 use rune_kit::shell::{
@@ -25,6 +25,7 @@ use crate::core::{
 };
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
+use crate::sprites;
 use crate::transcript::Item;
 use crate::ui::dither;
 use crate::ui::folder_picker::{self, FolderPicker};
@@ -76,6 +77,9 @@ pub struct FullUi {
     pub sidebar: PaneState,
     pub page: Page,
     pub board: Option<Board>,
+    /// When the open board's decider fills start rising; None once they have, or for a board
+    /// that should show its levels at once.
+    board_rise_at: Option<Instant>,
     pub picker: FolderPicker,
     /// Diffs of the open session's `edit` and `write` calls, by call id.
     diffs: HashMap<String, DiffState>,
@@ -118,6 +122,7 @@ impl FullUi {
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             page: Page::Chat,
             board: None,
+            board_rise_at: None,
             picker: FolderPicker::default(),
             diffs: HashMap::new(),
             ticked: None,
@@ -153,6 +158,7 @@ impl FullUi {
     fn open_scoreboard(&mut self) {
         self.board = Some(scoreboard::compute());
         self.page = Page::Scoreboard;
+        self.board_rise_at = Some(Instant::now() + BOARD_RISE_AFTER);
     }
 }
 
@@ -408,6 +414,15 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
     }
     let shore = s.page == Page::Chat && blank(&core) && s.shore_motion() == dither::Motion::Live;
     drop(core);
+    if let Some(at) = s.board_rise_at {
+        let now = Instant::now();
+        if now >= at {
+            s.board_rise_at = None;
+            changed = true;
+        } else {
+            tx.wake_after(at - now);
+        }
+    }
     if let Some((cwd, session)) = relaunch {
         let core = s.core.clone();
         std::thread::spawn(move || crate::core::start_pi(&core, Some(cwd), session));
@@ -834,7 +849,7 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
     };
     let title = title.lines().next().unwrap_or_default().to_owned();
     let mut trailing = row().gap(12.0).center_y();
-    if core.t.week.unrated() {
+    if page == Page::Chat && core.t.week.unrated() {
         trailing = trailing.child(
             Button::new("End run")
                 .variant(if core.can_end_run() {
@@ -886,117 +901,401 @@ fn scoreboard_empty(k: &Kit) -> El {
         )
 }
 
-fn scoreboard_page(board: &Board, k: &Kit) -> El {
+fn sprite(art: &sprites::Art) -> El {
+    el().size(art.width as f32 * art.pt, art.height as f32 * art.pt)
+        .pixels(&art.pixels)
+}
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    let noun = if n == 1 { one } else { many };
+    format!("{n} {noun}")
+}
+
+/// Every agent on the board once, in the order the tables first list them, with its runs and
+/// fan-out wins summed across roles.
+fn contenders(board: &Board) -> Vec<(String, String, usize, usize)> {
+    let mut out: Vec<(String, String, usize, usize)> = Vec::new();
+    for r in board.tables.iter().flat_map(|t| &t.rows) {
+        match out.iter_mut().find(|(agent, ..)| *agent == r.agent) {
+            Some((_, _, runs, wins)) => {
+                *runs += r.runs;
+                *wins += r.wins;
+            }
+            None => out.push((r.agent.clone(), r.name.clone(), r.runs, r.wins)),
+        }
+    }
+    out
+}
+
+fn roster(board: &Board, k: &Kit) -> El {
+    let c = &k.c;
+    let numbers = k.ty.small.features("'tnum' 1");
+    let mut strip = row().key("roster").w_full().gap(10.0).flex_wrap();
+    for (agent, name, runs, wins) in contenders(board) {
+        let stat = if wins > 0 {
+            format!(
+                "{} · {}",
+                count(runs, "run", "runs"),
+                count(wins, "win", "wins")
+            )
+        } else {
+            count(runs, "run", "runs")
+        };
+        strip = strip.child(
+            col()
+                .key(format!("roster-{agent}"))
+                .w(128.0)
+                .grow(1.0)
+                .gap(2.0)
+                .px(10.0)
+                .py(12.0)
+                .items_center()
+                .fill(c.surface_raised)
+                .border(1.0, c.border_weak)
+                .radius(k.radius.md)
+                .child(row().pb(8.0).child(sprite(sprites::model(&agent))))
+                .child(
+                    text(name)
+                        .font(k.ty.ui_medium)
+                        .color(c.text_base)
+                        .truncate(),
+                )
+                .child(text(stat).font(numbers).color(c.text_muted)),
+        );
+    }
+    strip
+}
+
+const PIPS: usize = 5;
+/// Tally marks shown before the count stands alone, so a busy agent stays on its card.
+const TALLY_MAX: usize = 20;
+
+fn pips(filled: usize, on: Color, off: Color) -> El {
+    let mut strip = row().gap(4.0).center_y();
+    for i in 0..PIPS {
+        let color = if i < filled { on } else { off };
+        strip = strip.child(el().size(8.0, 8.0).radius(4.0).fill(color));
+    }
+    strip
+}
+
+fn tally(runs: usize, color: Color) -> El {
+    let shown = runs.min(TALLY_MAX);
+    let mut marks = row().gap(6.0).center_y();
+    for group in 0..shown.div_ceil(5) {
+        let mut five = row().gap(2.0);
+        for _ in 0..(shown - group * 5).min(5) {
+            five = five.child(el().size(2.0, 12.0).fill(color));
+        }
+        marks = marks.child(five);
+    }
+    marks
+}
+
+fn stat(label: &str, value: El, k: &Kit) -> El {
+    row()
+        .gap(10.0)
+        .items_start()
+        .min_h(18.0)
+        .child(
+            row().w(48.0).child(
+                text(label.to_owned())
+                    .font(k.ty.small_medium.tracking(0.5))
+                    .color(k.c.text_muted),
+            ),
+        )
+        .child(value)
+}
+
+fn sheet_entry(
+    table: &scoreboard::Table,
+    r: &scoreboard::Row,
+    rank: Option<usize>,
+    index: usize,
+    k: &Kit,
+) -> El {
+    let c = &k.c;
+    let figures = k.ty.small.features("'tnum' 1");
+    let leads = rank == Some(1);
+    let ink = if rank.is_some() {
+        c.text_base
+    } else {
+        c.text_faint
+    };
+    let soft = if rank.is_some() {
+        c.text_muted
+    } else {
+        c.text_faint
+    };
+    let lead_ink = |ranked_by: bool| {
+        if leads && ranked_by {
+            c.text_accent
+        } else {
+            ink
+        }
+    };
+    let fmt = |v: Option<f64>, d: usize| v.map_or("—".to_owned(), |v| format!("{v:.d$}"));
+
+    let mut stats = col().gap(6.0);
+    if table.fanout || r.fanouts > 0 {
+        let share = r.win_share().unwrap_or(0.0);
+        let filled = (share * PIPS as f64).round() as usize;
+        stats = stats.child(stat(
+            "WINS",
+            row()
+                .gap(8.0)
+                .center_y()
+                .child(pips(filled, lead_ink(table.fanout), c.border_base))
+                .child(
+                    text(format!("{}/{}", r.wins, r.fanouts))
+                        .font(figures)
+                        .color(lead_ink(table.fanout)),
+                ),
+            k,
+        ));
+    }
+    let filled = r.mean_score().map_or(0, |score| score.round() as usize);
+    stats = stats.child(stat(
+        "SCORE",
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(pips(filled, lead_ink(!table.fanout), c.border_base))
+            .child(
+                text(fmt(r.mean_score(), 2))
+                    .font(figures)
+                    .color(lead_ink(!table.fanout)),
+            ),
+        k,
+    ));
+    let runs = if r.unrated > 0 {
+        format!("{} · {} unrated", r.runs, r.unrated)
+    } else {
+        r.runs.to_string()
+    };
+    stats = stats.child(stat(
+        "RUNS",
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(tally(r.runs, soft))
+            .child(text(runs).font(figures).color(soft)),
+        k,
+    ));
+    let detail = match (r.nailed_pct(), r.cost_per_run()) {
+        (Some(nailed), Some(cost)) => format!(
+            "{nailed:.0}% · ${cost:.3}/run · {} min",
+            fmt(r.median_your_min(), 1)
+        ),
+        _ => "no rated runs yet".to_owned(),
+    };
+    stats = stats.child(stat("NAIL", text(detail).font(figures).color(soft), k));
+
+    let mut title = row().gap(8.0).center_y().child(
+        text(r.name.clone())
+            .font(k.ty.ui_medium)
+            .color(ink)
+            .truncate()
+            .shrink()
+            .min_w(0.0),
+    );
+    if rank.is_none() {
+        title = title.child(text("too few").font(k.ty.small).color(c.text_faint));
+    }
+    let position = rank.map_or("–".to_owned(), |rank| rank.to_string());
+    let portrait =
+        sprite(sprites::model(&r.agent)).opacity(if rank.is_some() { 1.0 } else { 0.45 });
+    row()
+        .key(format!("{}-{index}", table.role))
+        .w_full()
+        .gap(12.0)
+        .items_start()
+        .px(16.0)
+        .py(14.0)
+        .border_sides([1.0, 0.0, 0.0, 0.0], c.border_weak)
+        .child(
+            row().w(18.0).pt(2.0).child(
+                text(position)
+                    .font(k.ty.body_medium.features("'tnum' 1"))
+                    .color(if leads { c.text_accent } else { soft }),
+            ),
+        )
+        .child(portrait)
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(8.0)
+                .child(title)
+                .child(stats),
+        )
+}
+
+const DEALT_BOX_H: f32 = 92.0;
+/// One dither cell, the size of a model sprite's pixel.
+const DITHER_PT: f32 = 3.0;
+/// Wider than any decider box, whose clip trims the pattern.
+const DITHER_SPAN: f32 = 180.0;
+/// Between one decider box's fill and the next's as they rise.
+const DEALT_STAGGER: f32 = 0.04;
+/// Past the page's own fade, so the decider fills rise where they can be seen.
+const BOARD_RISE_AFTER: Duration = Duration::from_millis(150);
+
+/// A fill `height` points tall: a solid stepped row at the level over a 25% ordered dither,
+/// rows counted up from the bottom so the pattern holds still whatever the level.
+fn dither_fill(height: f32, color: Color) -> Shape {
+    let rows = ((height / DITHER_PT).floor() as usize).max(1);
+    let cols = (DITHER_SPAN / DITHER_PT) as usize;
+    let cell = |x: f32, top: f32, w: f32| {
+        [
+            [x, top],
+            [x + w, top],
+            [x + w, top + DITHER_PT],
+            [x, top + DITHER_PT],
+        ]
+    };
+    let mut shape = Shape::new();
+    for row in 0..rows {
+        let top = height - (row + 1) as f32 * DITHER_PT;
+        if row + 1 == rows {
+            shape = shape.fill(cell(0.0, top, DITHER_SPAN), color);
+            continue;
+        }
+        if row % 2 == 1 {
+            continue;
+        }
+        for col in (0..cols).step_by(2) {
+            shape = shape.fill(cell(col as f32 * DITHER_PT, top, DITHER_PT), color);
+        }
+    }
+    shape
+}
+
+/// One decider's box: its icon, share and name over a dithered fill, held below the box until
+/// `risen` and then springing up to the share.
+fn dealt_box(index: usize, source: &str, label: &str, share: f64, risen: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let decided = share > 0.0;
+    let level = DEALT_BOX_H * (share / 100.0) as f32;
+    let mut card = col()
+        .key(format!("dealt-{source}"))
+        .w(0.0)
+        .grow(1.0)
+        .h(DEALT_BOX_H)
+        .center()
+        .gap(2.0)
+        .border(1.0, c.border_weak)
+        .radius(k.radius.md)
+        .clip_rounded(k.radius.md);
+    if decided {
+        card = card.child(
+            el().key("fill")
+                .pin(Some(0.0), None, Some(0.0), Some(0.0))
+                .h(level)
+                .shape(dither_fill(level, c.border_base))
+                .offset(0.0, if risen { 0.0 } else { level })
+                .offset_motion(Spring::new(0.45, 0.15).delay(DEALT_STAGGER * index as f32)),
+        );
+    }
+    card.child(
+        row()
+            .pb(2.0)
+            .child(sprite(sprites::decider(source)).opacity(if decided { 1.0 } else { 0.45 })),
+    )
+    .child(
+        text(format!("{share}%"))
+            .font(k.ty.small_medium.features("'tnum' 1"))
+            .color(if decided { c.text_base } else { c.text_faint }),
+    )
+    .child(text(label.to_owned()).font(k.ty.small).color(c.text_muted))
+}
+
+fn role_sheet(table: &scoreboard::Table, risen: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let mut heading = col().grow(1.0).min_w(0.0).gap(6.0).child(
+        text(table.role.to_uppercase())
+            .font(k.ty.body_medium.tracking(0.4))
+            .color(c.text_base),
+    );
+    if !table.criteria.is_empty() {
+        heading = heading.child(stat(
+            "CLASS",
+            text(table.criteria.clone())
+                .font(k.ty.small)
+                .color(c.text_base)
+                .wrap()
+                .shrink()
+                .min_w(0.0),
+            k,
+        ));
+    }
+    let mut header = col().w_full().gap(14.0).padding(16.0).child(
+        row()
+            .w_full()
+            .gap(16.0)
+            .items_start()
+            .child(heading)
+            .child(sprite(sprites::role(&table.role))),
+    );
+    if let Some(shares) = table.decisions.shares() {
+        let mut boxes = row().grow(1.0).min_w(0.0).gap(8.0);
+        for (index, (source, label, share)) in shares.into_iter().enumerate() {
+            boxes = boxes.child(dealt_box(index, source, label, share, risen, k));
+        }
+        header = header.child(stat("DEALT", boxes, k));
+    }
+    let mut card = col()
+        .key(format!("role-{}", table.role))
+        .w(360.0)
+        .grow(1.0)
+        .fill(c.surface_raised)
+        .border(1.0, c.border_weak)
+        .radius(k.radius.lg)
+        .child(header);
+    let mut rank = 0;
+    for (index, r) in table.rows.iter().enumerate() {
+        let place = if r.too_few() {
+            None
+        } else {
+            rank += 1;
+            Some(rank)
+        };
+        card = card.child(sheet_entry(table, r, place, index, k));
+    }
+    card
+}
+
+fn scoreboard_page(board: &Board, risen: bool, k: &Kit) -> El {
     let c = &k.c;
     if board.runs == 0 {
         return scoreboard_empty(k);
     }
-    let numbers = k.ty.ui.features("'tnum' 1");
-    let name_cell = |t: String, strong: bool| {
-        text(t)
-            .font(if strong { k.ty.ui_medium } else { k.ty.ui })
-            .color(if strong { c.text_base } else { c.text_muted })
-            .truncate()
-            .grow(1.0)
-            .min_w(160.0)
-    };
-    let cell = |t: String, w: f32| {
-        row()
-            .w(w)
-            .justify_end()
-            .child(text(t).font(numbers).color(c.text_muted))
-    };
-    let mut page = col().w_full().gap(22.0).px(28.0).py(22.0);
-    let mut summary = col().gap(4.0).child(
-        text(format!(
-            "{} runs logged · agents under {} runs are marked too few and can’t rank first",
-            board.runs,
-            scoreboard::TOO_FEW
-        ))
-        .font(k.ty.small)
-        .color(c.text_muted),
-    );
-    if let Some(line) = board.decisions.line() {
-        summary = summary.child(
-            text(format!("Role decided by {line}"))
-                .font(k.ty.small.features("'tnum' 1"))
-                .color(c.text_muted),
-        );
+    let summary = text(format!(
+        "{} · {} to rank",
+        count(board.runs, "run", "runs"),
+        count(scoreboard::TOO_FEW, "run", "runs")
+    ))
+    .font(k.ty.small.features("'tnum' 1"))
+    .color(c.text_faint);
+    let mut page = col()
+        .w_full()
+        .gap(28.0)
+        .px(28.0)
+        .py(22.0)
+        .child(summary)
+        .child(roster(board, k));
+    let mut sheets = col().w_full().gap(16.0);
+    for pair in board.tables.chunks(2) {
+        let mut line = row().w_full().gap(16.0).flex_wrap().items_start();
+        for table in pair {
+            line = line.child(role_sheet(table, risen, k));
+        }
+        if pair.len() == 1 {
+            line = line.child(el().w(360.0).grow(1.0));
+        }
+        sheets = sheets.child(line);
     }
-    page = page.child(summary);
-    for table in &board.tables {
-        let ranked = if table.fanout {
-            "ranked by fan-out wins"
-        } else {
-            "ranked by mean score"
-        };
-        let mut t = col().w_full().gap(4.0).child(
-            row()
-                .gap(10.0)
-                .center_y()
-                .child(
-                    text(table.role.clone())
-                        .font(k.ty.body_medium)
-                        .color(c.text_base),
-                )
-                .child(text(ranked).font(k.ty.small).color(c.text_muted)),
-        );
-        if let Some(line) = table.decisions.line() {
-            t = t.child(
-                text(format!("decided by {line}"))
-                    .font(k.ty.small.features("'tnum' 1"))
-                    .color(c.text_muted),
-            );
-        }
-        let wins = table.fanout || table.rows.iter().any(|r| r.fanouts > 0);
-        let mut header = row()
-            .py(4.0)
-            .child(name_cell("agent".into(), false))
-            .child(cell("runs".into(), 60.0))
-            .child(cell("nailed".into(), 70.0))
-            .child(cell("score".into(), 70.0))
-            .child(cell("your-min".into(), 80.0))
-            .child(cell("cost/run".into(), 80.0));
-        if wins {
-            header = header.child(cell("wins".into(), 60.0));
-        }
-        header = header.child(cell("unrated".into(), 70.0));
-        t = t.child(header);
-        for (index, r) in table.rows.iter().enumerate() {
-            let name = if r.too_few() {
-                format!("{} · too few", r.name)
-            } else {
-                r.name.clone()
-            };
-            let fmt = |v: Option<f64>, d: usize| v.map_or("—".to_owned(), |v| format!("{v:.d$}"));
-            let mut line = row()
-                .key(format!("{}-{index}", table.role))
-                .py(6.0)
-                .border_sides([1.0, 0.0, 0.0, 0.0], c.border_weak)
-                .child(name_cell(name, index == 0 && !r.too_few()))
-                .child(cell(r.runs.to_string(), 60.0))
-                .child(cell(fmt(r.nailed_pct(), 0) + "%", 70.0))
-                .child(cell(fmt(r.mean_score(), 2), 70.0))
-                .child(cell(fmt(r.median_your_min(), 1), 80.0))
-                .child(cell(
-                    r.cost_per_run()
-                        .map_or("—".to_owned(), |v| format!("${v:.3}")),
-                    80.0,
-                ));
-            if wins {
-                line = line.child(cell(
-                    if r.fanouts > 0 {
-                        format!("{}/{}", r.wins, r.fanouts)
-                    } else {
-                        "—".into()
-                    },
-                    60.0,
-                ));
-            }
-            t = t.child(line.child(cell(r.unrated.to_string(), 70.0)));
-        }
-        page = page.child(t);
-    }
+    page = page.child(sheets);
     col()
         .key("scoreboard-page")
         .w_full()
@@ -1024,7 +1323,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     s.reduced_motion
         .store(cx.is_reduced_motion(), Ordering::Relaxed);
     let main = match (s.page, &s.board) {
-        (Page::Scoreboard, Some(board)) => scoreboard_page(board, k),
+        (Page::Scoreboard, Some(board)) => scoreboard_page(board, s.board_rise_at.is_none(), k),
         _ => chat(s, &core, k, cx.system_dark()),
     };
     let mut overlays = Vec::new();

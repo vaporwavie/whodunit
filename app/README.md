@@ -78,4 +78,4 @@ whodunit -- --cwd ~/some/dir    # run pi in that folder
 whodunit -- --scoreboard        # print the scoreboard as Markdown and exit
 ```
 
-The Scoreboard page shows the same board as `scoreboard/scoreboard.mjs`.
+The Scoreboard page shows the same numbers as `scoreboard/scoreboard.mjs`, laid out like character sheets: a row of model tiles, then one card per role. Each card has the role's criteria, a box per decider (Jev, picker, `/role`, fallback) filled to its share of deals, and every contender's score and win share as pips and its runs as tally marks. The sprites are JSON in `assets/sprites/` (16×16 roles, 12×12 models and deciders, at most 5 colors each), keyed by role name, agent id and deal source. Anything without a sprite gets the `fallback` one.

@@ -1,0 +1,140 @@
+{
+  "anthropic/claude-opus-5-5": {
+    "palette": {
+      ".": null,
+      "h": "#e2d9c6",
+      "f": "#b5aa95",
+      "s": "#7d7466",
+      "a": "#b8775a"
+    },
+    "rows": [
+      "......hf....",
+      "......hfaa..",
+      "......hf.aa.",
+      "......hf..aa",
+      "......hf...a",
+      "......hf..a.",
+      "......hf....",
+      "......hf....",
+      "..hhhhhf....",
+      ".hhhfffs....",
+      ".hffffss....",
+      "..ssss......"
+    ]
+  },
+  "openai-codex/gpt-6.1-sol": {
+    "palette": {
+      ".": null,
+      "h": "#dbd6cb",
+      "f": "#b6af9e",
+      "s": "#7f786b",
+      "a": "#988e79"
+    },
+    "rows": [
+      ".....aa.....",
+      ".a........a.",
+      "....ffff....",
+      "...fhhfff...",
+      "..fhhffffs..",
+      "a.fhfffffs.a",
+      "a.fffffffs.a",
+      "..fffffffs..",
+      "...fffffs...",
+      "....ssss....",
+      ".a........a.",
+      ".....aa....."
+    ]
+  },
+  "openai-codex/gpt-6-astra": {
+    "palette": {
+      ".": null,
+      "h": "#dfe3e6",
+      "f": "#a9b4bf",
+      "s": "#6f7c8a",
+      "a": "#8a9db3"
+    },
+    "rows": [
+      ".....hf.....",
+      ".....hf...a.",
+      "....hhff....",
+      "....hhff....",
+      "...hhhfff...",
+      "hhhhhhffffff",
+      "ffffffssssss",
+      "...fffsss...",
+      "....ffss....",
+      ".a..ffss....",
+      ".....fs.....",
+      ".....fs....."
+    ]
+  },
+  "radius/gemini-4-argon": {
+    "palette": {
+      ".": null,
+      "h": "#e0dccf",
+      "f": "#aaa79b",
+      "s": "#77756c",
+      "a": "#8fa58a"
+    },
+    "rows": [
+      "a..........a",
+      ".ahhhhhhhha.",
+      "..ffffffff..",
+      "...hf..hf...",
+      "...hf..hf...",
+      "...hf..hf...",
+      "...hf..hf...",
+      "...hf..hf...",
+      "...hf..hf...",
+      "..hhhhhhhh..",
+      ".assssssssa.",
+      "a..........a"
+    ]
+  },
+  "radius/kimi-k3.1-pro": {
+    "palette": {
+      ".": null,
+      "h": "#e6e2d6",
+      "f": "#b9b3a6",
+      "s": "#7c776d",
+      "a": "#a7a0bf"
+    },
+    "rows": [
+      "...ffff.....",
+      ".ffhhf......",
+      ".fhhf.....a.",
+      "fhhf........",
+      "fhhf........",
+      "fhhf........",
+      "fhhhf.......",
+      "fhhhhf......",
+      ".fhhhhff..a.",
+      ".sfhhhhhffs.",
+      "..ssfffffs..",
+      "....ssss...."
+    ]
+  },
+  "fallback": {
+    "palette": {
+      ".": null,
+      "h": "#dcd6c8",
+      "f": "#a8a192",
+      "s": "#6e685d",
+      "a": "#a59c8a"
+    },
+    "rows": [
+      "............",
+      "...hhhhhf...",
+      "..hhf..hhf..",
+      "..ff...hhf..",
+      ".......hhf..",
+      "......hhf...",
+      ".....hhf....",
+      ".....hf.....",
+      ".....ss.....",
+      "............",
+      ".....aa.....",
+      ".....ss....."
+    ]
+  }
+}

@@ -1,0 +1,170 @@
+{
+  "errand-boy": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#968f83",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      ".....aaaaaa.....",
+      "....addddddaa...",
+      "....adddedddda..",
+      "...abbbbaaaaaaa.",
+      "...accccccca....",
+      "...acacccaca....",
+      "...acccccbca....",
+      "....acccca......",
+      "..aaabbbaaaaaaa.",
+      ".abdddebaaddeda.",
+      ".acddedbaaddeda.",
+      "..acdebbaabbeba.",
+      "..aaaaaaaaaaaaa.",
+      "...abbabba......",
+      "..abb..abba.....",
+      ".aaaa..aaaaa...."
+    ]
+  },
+  "builder": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#a0988a",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      ".....aaaaaa.....",
+      "....adddddda....",
+      "...adddedddda...",
+      "..addddeddddda..",
+      ".abbbbbbbbbbbba.",
+      "....acccccca....",
+      "....acaccaca....",
+      "....accccbca....",
+      ".aaa.acccca.....",
+      ".aeaaaddddaa....",
+      ".aaaadbddbda....",
+      "..bacdbedbdca...",
+      "..bacdbbbbdca...",
+      "..a.aabbbbaa....",
+      "....abbaabba....",
+      "...aaaa..aaaa..."
+    ]
+  },
+  "brainiac": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#a28d88",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      ".....aaaaaa.....",
+      "....aabbbbaa....",
+      "...aaaaaaabaa...",
+      "....acccccba....",
+      "...acaccccaca...",
+      "...aaeaaaaeaa...",
+      "...acaccccaca...",
+      "....accccbca....",
+      ".....acccca.....",
+      "...aeecceaabaa..",
+      "..aeeeebeadcca..",
+      "..aeaeebeadbba..",
+      "..acceebeaccda..",
+      "...aeeeaeaaaaa..",
+      "....abbaabba....",
+      "...aaaa..aaaa..."
+    ]
+  },
+  "scout": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#89937d",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      ".....aaaaaa.....",
+      "....adddddda....",
+      "...adddddddda...",
+      "...abbbbbbbba...",
+      ".aaddddddddddaa.",
+      "....acccccca....",
+      "...abbaaaabba...",
+      ".acaeeabbaeeaca.",
+      ".acaebabbaebaca.",
+      "..aaaaaccaaaaa..",
+      "...adbbccbbda...",
+      "...adbdcdbbda...",
+      "...adbdedbbda...",
+      "....abbbbbba....",
+      "....abbaabba....",
+      "...aaaa..aaaa..."
+    ]
+  },
+  "scribe": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#89959d",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      ".....aaaaaa.....",
+      "....abbbbbba....",
+      "...aabbbbbaaa...",
+      "....acccccca....",
+      "....acaccaca....",
+      "....acccccca....",
+      "....accccbca....",
+      ".....acccca.....",
+      "...aaddccddaa...",
+      "..aaaadddaaaa.a.",
+      ".acaeeaaaeeadaa.",
+      ".acaeeeaeeeadca.",
+      "..aaaaeaeaaaaa..",
+      "....adaaadda....",
+      "....abbaabba....",
+      "...aaaa..aaaa..."
+    ]
+  },
+  "fallback": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#8c9293",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      "......aaaa......",
+      "....aabbbbaa....",
+      "...acbbbbbbba...",
+      "..acbaaeeaabba..",
+      "..acbaeaaeabba..",
+      "..acbaaaaeabba..",
+      ".acbbaaaeeabbba.",
+      ".acbbaaaeaabbba.",
+      "..acbaaaaaabba..",
+      "...acaaaeaaba...",
+      "....aabddbaa....",
+      "..aabddddddbaa..",
+      ".abbbddddddbbba.",
+      ".abbddddddddbba.",
+      ".abbbbbbbbbbbba.",
+      ".aaaaaa..aaaaaa."
+    ]
+  }
+}

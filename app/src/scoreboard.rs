@@ -72,26 +72,38 @@ impl Decisions {
         self.jev + self.picker + self.forced + self.fallback
     }
 
-    /// "Jev 80% · picker 15% · /role 5% · fallback 0%", or None before the first deal.
-    pub fn line(&self) -> Option<String> {
+    /// Each decider as (source key, label, share of deals in whole percent), or None before
+    /// the first deal.
+    pub fn shares(&self) -> Option<[(&'static str, &'static str, f64); 4]> {
         let total = self.total();
         if total == 0 {
             return None;
         }
         let pct = |n: usize| (100.0 * n as f64 / total as f64).round();
-        Some(format!(
-            "Jev {}% · picker {}% · /role {}% · fallback {}%",
-            pct(self.jev),
-            pct(self.picker),
-            pct(self.forced),
-            pct(self.fallback)
-        ))
+        Some([
+            ("jev", "Jev", pct(self.jev)),
+            ("picker", "picker", pct(self.picker)),
+            ("forced", "/role", pct(self.forced)),
+            ("fallback", "fallback", pct(self.fallback)),
+        ])
+    }
+
+    /// "Jev 80% · picker 15% · /role 5% · fallback 0%", or None before the first deal.
+    pub fn line(&self) -> Option<String> {
+        let shares = self.shares()?;
+        let parts: Vec<String> = shares
+            .iter()
+            .map(|(_, label, share)| format!("{label} {share}%"))
+            .collect();
+        Some(parts.join(" · "))
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Table {
     pub role: String,
+    /// The role's `criteria` from roles.json: what kind of task gets dealt to it.
+    pub criteria: String,
     pub fanout: bool,
     pub rows: Vec<Row>,
     pub decisions: Decisions,
@@ -118,7 +130,8 @@ fn median(values: &[f64]) -> Option<f64> {
     })
 }
 
-fn contenders() -> BTreeMap<String, Vec<String>> {
+/// Each role's contenders and criteria, from roles.json.
+fn role_sheets() -> BTreeMap<String, (Vec<String>, String)> {
     let Ok(text) = fs::read_to_string(config::week_dir().join("roles.json")) else {
         return BTreeMap::new();
     };
@@ -141,7 +154,12 @@ fn contenders() -> BTreeMap<String, Vec<String>> {
                         .collect()
                 })
                 .unwrap_or_default();
-            (id.clone(), list)
+            let criteria = role
+                .get("criteria")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            (id.clone(), (list, criteria))
         })
         .collect()
 }
@@ -173,24 +191,22 @@ pub fn compute() -> Board {
     }
 
     let roles = config::roles();
-    let contenders = contenders();
+    let sheets = role_sheets();
     let mut tables: Vec<Table> = roles
         .iter()
         .map(|(role, fanout)| {
+            let (contenders, criteria) = sheets.get(role).cloned().unwrap_or_default();
             let rows = contenders
-                .get(role)
-                .map(|list| {
-                    list.iter()
-                        .map(|agent| Row {
-                            agent: agent.clone(),
-                            name: config::agent_name(agent),
-                            ..Row::default()
-                        })
-                        .collect()
+                .iter()
+                .map(|agent| Row {
+                    agent: agent.clone(),
+                    name: config::agent_name(agent),
+                    ..Row::default()
                 })
-                .unwrap_or_default();
+                .collect();
             Table {
                 role: role.clone(),
+                criteria,
                 fanout: *fanout,
                 rows,
                 decisions: Decisions::default(),

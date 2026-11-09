@@ -1,0 +1,98 @@
+{
+  "jev": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#8c7fa3",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      "............",
+      "....aaaa....",
+      "...aeecca...",
+      "..aeedddca..",
+      "..aecdddba..",
+      "..acddddba..",
+      "...acdbba...",
+      "....aaaa....",
+      "....abba....",
+      "...aceeba...",
+      "..aaaaaaaa..",
+      "............"
+    ]
+  },
+  "forced": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#a8664e",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      "............",
+      "....aaaa....",
+      "..aaacca....",
+      ".accacaaaa..",
+      ".aecaaeeeca.",
+      "..acaaeddca.",
+      "..acaaeddca.",
+      "...abaeeeca.",
+      "...abaeeeca.",
+      "....aacccca.",
+      "......aaaa..",
+      "............"
+    ]
+  },
+  "picker": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#89959d",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      "............",
+      ".....aaa....",
+      ".....aea....",
+      ".....aea....",
+      ".....aeaaa..",
+      "..aa.aeccca.",
+      "..aeaaecbca.",
+      "...aececcba.",
+      "....acccba..",
+      "....adddda..",
+      "....aaaaaa..",
+      "............"
+    ]
+  },
+  "fallback": {
+    "palette": {
+      ".": null,
+      "a": "#5c5851",
+      "b": "#938c7f",
+      "c": "#d2c9b5",
+      "d": "#a8664e",
+      "e": "#eee5d0"
+    },
+    "rows": [
+      "............",
+      "....aaaa....",
+      "..aaddddaa..",
+      "..aeeaaeea..",
+      ".aeea..aeea.",
+      ".ada....ada.",
+      ".ada....ada.",
+      ".acea..aeca.",
+      "..accaacba..",
+      "..aaddddaa..",
+      "....aaaa....",
+      "............"
+    ]
+  }
+}

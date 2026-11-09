@@ -7,7 +7,7 @@ use std::time::Duration;
 use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::{El, Spring, SpringPair, Transition, effect};
 
-use crate::ui::full::FullUi;
+use crate::ui::window::Window;
 use crate::ui::{seal, stage};
 
 const MARK: u32 = 0xd17e;
@@ -267,7 +267,7 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
-/// Draws frames only when asked: `full::poll` paces the motion at `FRAME`. Paints the shore and
+/// Draws frames only when asked: `window::poll` paces the motion at `FRAME`. Paints the shore and
 /// the working chat's stage (`stage::MARK`).
 #[derive(Default)]
 pub struct Waves {
@@ -282,12 +282,12 @@ pub struct Waves {
     last: Option<f32>,
 }
 
-impl Compositor<FullUi> for Waves {
+impl Compositor<Window> for Waves {
     fn features(&self) -> wgpu::Features {
         wgpu::Features::IMMEDIATES
     }
 
-    fn render(&mut self, f: &mut Frame<'_, FullUi>) {
+    fn render(&mut self, f: &mut Frame<'_, Window>) {
         let key = f.device_key();
         if self.device != Some(key) {
             self.pipelines.clear();

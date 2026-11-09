@@ -1,4 +1,5 @@
-//! The default mode: an ordinary agent chat window (sessions, transcript, composer) under the week's rules.
+//! The app's window: the session sidebar, then a chat (transcript, composer) or the scoreboard
+//! page, under the week's rules.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -87,7 +88,7 @@ struct Draft {
     dialog_generation: u64,
 }
 
-pub struct FullUi {
+pub struct Window {
     pub core: Shared,
     pub composer: TextEdit,
     /// Images pasted or dropped on the composer, sent with the next prompt.
@@ -130,7 +131,7 @@ pub struct FullUi {
     dialog_generation: u64,
 }
 
-impl HasCore for FullUi {
+impl HasCore for Window {
     fn core(&self) -> &Shared {
         &self.core
     }
@@ -169,11 +170,11 @@ impl HasCore for FullUi {
     }
 }
 
-impl FullUi {
-    pub fn new(core: Shared) -> FullUi {
+impl Window {
+    pub fn new(core: Shared) -> Window {
         let mut composer = TextEdit::new("");
         composer.focused = true;
-        FullUi {
+        Window {
             core,
             composer,
             attachments: Vec::new(),
@@ -250,7 +251,7 @@ impl FullUi {
     }
 }
 
-fn submit(s: &mut FullUi, tx: &mut Tx, follow_up: bool) {
+fn submit(s: &mut Window, tx: &mut Tx, follow_up: bool) {
     let text = s.composer.text.clone();
     if text.trim() == "/scoreboard" {
         s.composer.clear();
@@ -322,7 +323,7 @@ pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
     true
 }
 
-fn composer_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
+fn composer_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let empty = s.composer.text.is_empty();
     if dialog_keys(&mut lock(&s.core), ev, empty) {
         return true;
@@ -355,7 +356,7 @@ fn is_shot_file(path: &std::path::Path) -> bool {
 }
 
 /// Adds images to the composer. A sealed chat or an open dialog takes none, as it takes no prompt.
-fn attach(s: &mut FullUi, shots: impl IntoIterator<Item = Result<Shot, String>>) {
+fn attach(s: &mut Window, shots: impl IntoIterator<Item = Result<Shot, String>>) {
     let mut core = lock(&s.core);
     if core.t.week.done.is_some() || core.dialog.is_some() {
         return;
@@ -371,7 +372,7 @@ fn attach(s: &mut FullUi, shots: impl IntoIterator<Item = Result<Shot, String>>)
 
 /// ⌘V with an image, a screenshot or image files copied in Finder attaches them; anything
 /// else pastes as text.
-fn composer_paste(s: &mut FullUi, content: &ClipboardContent, _: &mut Tx) -> bool {
+fn composer_paste(s: &mut Window, content: &ClipboardContent, _: &mut Tx) -> bool {
     let files: Vec<_> = content.files().iter().filter(|p| is_shot_file(p)).collect();
     if !files.is_empty() {
         attach(s, files.into_iter().map(|p| Shot::from_file(p)));
@@ -387,7 +388,7 @@ fn composer_paste(s: &mut FullUi, content: &ClipboardContent, _: &mut Tx) -> boo
 }
 
 /// ↑/↓ move the slash list's highlight, Tab completes it, ⏎ runs it.
-fn slash_key(s: &mut FullUi, key: &Key, tx: &mut Tx) -> bool {
+fn slash_key(s: &mut Window, key: &Key, tx: &mut Tx) -> bool {
     let matches = slash_matches(&s.composer.text, &lock(&s.core));
     if matches.is_empty() {
         return false;
@@ -410,7 +411,7 @@ fn needs_argument(description: &str) -> bool {
 }
 
 /// ⏎ or a click on a slash row: run the command, or type it out when it still needs an argument.
-fn choose_slash(s: &mut FullUi, name: &str, description: &str, tx: &mut Tx) {
+fn choose_slash(s: &mut Window, name: &str, description: &str, tx: &mut Tx) {
     s.composer.focused = true;
     if needs_argument(description) {
         s.composer.replace_text(format!("/{name} "));
@@ -440,7 +441,7 @@ fn slash_matches(input: &str, core: &Core) -> Vec<(String, String)> {
         .collect()
 }
 
-pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
+pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.viewing.is_some() {
         // Esc closes the image, and only the image: it never also stops the agent.
         if ev.key == Key::Escape {
@@ -495,14 +496,14 @@ pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
     false
 }
 
-fn request_end(s: &mut FullUi, tx: &mut Tx) {
+fn request_end(s: &mut Window, tx: &mut Tx) {
     s.show(Page::Chat, tx);
     lock(&s.core).end_run();
 }
 
 /// ⌘I: back to the chat with the keyboard in its composer, or in the field of the dialog that
 /// stands in for it. A sealed chat has neither.
-fn focus_composer(s: &mut FullUi, tx: &mut Tx) {
+fn focus_composer(s: &mut Window, tx: &mut Tx) {
     s.show(Page::Chat, tx);
     let core = lock(&s.core);
     if let Some(dialog) = &core.dialog {
@@ -517,7 +518,7 @@ fn focus_composer(s: &mut FullUi, tx: &mut Tx) {
 /// Brings the window's own state up to the core: the selected chat's drafts, diffs and
 /// prefilled text. Another chat, or this one reloaded from pi, lands whole in one frame: nothing
 /// grows, reveals or springs over from what was on screen. Returns whether any of it changed.
-fn catch_up(s: &mut FullUi, core: &Core, tx: &mut Tx) -> bool {
+fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     let mut changed = core.version != s.seen;
     s.seen = core.version;
     let switched = core.task_id() != s.seen_task;
@@ -591,7 +592,7 @@ fn start_soon(core: &Core, tx: &mut Tx) {
     }
 }
 
-pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
+pub fn poll(s: &mut Window, _t: f64, tx: &mut Tx) -> bool {
     let shared = s.core.clone();
     let mut core = lock(&shared);
     if let Some(next) = core.expire_toasts() {
@@ -649,7 +650,7 @@ pub fn poll(s: &mut FullUi, _t: f64, tx: &mut Tx) -> bool {
 
 /// One session in the sidebar; `names` are the agents' display names, read once per sidebar.
 fn session_row(
-    s: &FullUi,
+    s: &Window,
     core: &Core,
     summary: &Summary,
     names: &BTreeMap<String, String>,
@@ -661,7 +662,7 @@ fn session_row(
     let mut r = SidebarRow::new(summary.title.clone())
         .subtitle(summary.subtitle())
         .selected(current && s.page == Page::Chat)
-        .on_select(move |s: &mut FullUi, tx| s.leave(Leave::Open(path.clone()), tx));
+        .on_select(move |s: &mut Window, tx| s.leave(Leave::Open(path.clone()), tx));
     // The role's and the agent's sprites, only once the run has ended and they can show.
     // The role's sits in the title's line, so it drops to centre on both lines.
     let deal = summary.revealed();
@@ -711,7 +712,7 @@ const SPRITE_TIP_DELAY: Duration = Duration::from_millis(500);
 /// A sidebar sprite that names itself in a tooltip while the pointer rests on it. `key` names
 /// the tooltip; the sprite itself is keyed `{key}-icon`.
 fn sprite_tip(
-    s: &FullUi,
+    s: &Window,
     key: String,
     art: &sprites::Art,
     name: String,
@@ -722,7 +723,7 @@ fn sprite_tip(
     let icon = sprite(art)
         .key(format!("{key}-icon"))
         .hover_delays(SPRITE_TIP_DELAY, Duration::ZERO)
-        .on_hover_change(move |s: &mut FullUi, inside, _| {
+        .on_hover_change(move |s: &mut Window, inside, _| {
             if inside {
                 s.sprite_tip = Some(id.clone());
             } else if s.sprite_tip.as_ref() == Some(&id) {
@@ -737,7 +738,7 @@ fn sprite_tip(
         .build(k, layer)
 }
 
-fn sidebar(s: &FullUi, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
+fn sidebar(s: &Window, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
     // Only ended rows name their agent, so the file is read only while some show.
     let shown = |summary: &&Summary| {
         !s.ended_collapsed || core.session_state(summary) != SessionState::Ended
@@ -762,7 +763,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
                 .icon(&PLUS)
                 .detail(cmd("N"))
                 .height(32.0)
-                .on_select(|s: &mut FullUi, tx| {
+                .on_select(|s: &mut Window, tx| {
                     s.leave(Leave::New, tx);
                     s.composer.focused = true;
                 })
@@ -775,7 +776,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
                 .detail(cmd("2"))
                 .height(32.0)
                 .selected(s.page == Page::Scoreboard)
-                .on_select(|s: &mut FullUi, tx| s.open_scoreboard(tx))
+                .on_select(|s: &mut Window, tx| s.open_scoreboard(tx))
                 .build(k)
                 .key("scoreboard"),
         );
@@ -803,7 +804,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
                     SidebarHeader::new(label)
                         .count(sessions.len())
                         .collapsed(s.ended_collapsed)
-                        .on_toggle(|s: &mut FullUi, _| s.ended_collapsed = !s.ended_collapsed)
+                        .on_toggle(|s: &mut Window, _| s.ended_collapsed = !s.ended_collapsed)
                         .build(k),
                 );
             if !s.ended_collapsed {
@@ -876,10 +877,10 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
                 .h(SLASH_ROW_H)
                 .role("button")
                 .label(format!("/{name}"))
-                .on_pointer_move(move |s: &mut FullUi, _| {
+                .on_pointer_move(move |s: &mut Window, _| {
                     s.slash_pick = (s.composer.text.clone(), index);
                 })
-                .on_press_tx(move |s: &mut FullUi, tx| choose_slash(s, &target, &about, tx)),
+                .on_press_tx(move |s: &mut Window, tx| choose_slash(s, &target, &about, tx)),
         );
     }
     for (name, description) in matches {
@@ -911,7 +912,7 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
     )
 }
 
-fn composer_footer(s: &FullUi, core: &Core, k: &Kit) -> El {
+fn composer_footer(s: &Window, core: &Core, k: &Kit) -> El {
     let mut status = row().gap(8.0).center_y().grow(1.0).shrink().min_w(0.0);
     if let Some(mode) = shell_mode(&s.composer.text) {
         status = status.child(parts::chip(mode, k));
@@ -961,14 +962,14 @@ fn shell_mode(input: &str) -> Option<&'static str> {
 }
 
 /// One slot that is Stop while the agent works on an empty field and Send otherwise, so swapping never moves the footer.
-fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
+fn send_button(s: &Window, core: &Core, k: &Kit) -> El {
     let empty = s.composer.text.trim().is_empty() && s.attachments.is_empty();
     if core.streaming && empty {
         return IconButton::new(&STOP)
             .variant(IconButtonVariant::Submit)
             .label("Stop")
             .shortcut("esc")
-            .on_press(|s: &mut FullUi| lock(&s.core).abort())
+            .on_press(|s: &mut Window| lock(&s.core).abort())
             .build(k)
             .key("send");
     }
@@ -979,7 +980,7 @@ fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
             IconButtonVariant::Submit
         })
         .disabled(empty)
-        .on_press_tx(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false));
+        .on_press_tx(|s: &mut Window, tx: &mut Tx| submit(s, tx, false));
     let button = if core.streaming {
         button
             .label("Steer")
@@ -1034,7 +1035,7 @@ fn context_meter(core: &Core, k: &Kit) -> Option<El> {
 const COMPOSER_SHOT: f32 = 56.0;
 
 /// The images the next prompt carries, each with a button that takes it off.
-fn attachment_strip(s: &FullUi, k: &Kit) -> Option<El> {
+fn attachment_strip(s: &Window, k: &Kit) -> Option<El> {
     if s.attachments.is_empty() {
         return None;
     }
@@ -1043,7 +1044,7 @@ fn attachment_strip(s: &FullUi, k: &Kit) -> Option<El> {
             .variant(IconButtonVariant::Neutral)
             .control_size(ControlSize::Small)
             .label("Remove image")
-            .on_press(move |s: &mut FullUi| {
+            .on_press(move |s: &mut Window| {
                 if index < s.attachments.len() {
                     s.attachments.remove(index);
                 }
@@ -1068,7 +1069,7 @@ fn attachment_strip(s: &FullUi, k: &Kit) -> Option<El> {
 }
 
 /// pi's composer field: plain, growing from two lines to ten, and taking pasted images.
-fn composer_field(s: &FullUi, placeholder: &str, k: &Kit) -> El {
+fn composer_field(s: &Window, placeholder: &str, k: &Kit) -> El {
     let c = &k.c;
     let style = TextStyle {
         line_height: (13.0f32 * 1.35 * 2.0).round() / 2.0,
@@ -1081,8 +1082,8 @@ fn composer_field(s: &FullUi, placeholder: &str, k: &Kit) -> El {
         .placeholder(placeholder, c.text_faint)
         .caret(c.text_base, k.selection())
         .label(placeholder)
-        .on_edit(|s: &mut FullUi| &mut s.composer)
-        .on_submit(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false))
+        .on_edit(|s: &mut Window| &mut s.composer)
+        .on_submit(|s: &mut Window, tx: &mut Tx| submit(s, tx, false))
         .on_input_key(composer_key)
         .on_input_paste(composer_paste);
     col()
@@ -1092,7 +1093,7 @@ fn composer_field(s: &FullUi, placeholder: &str, k: &Kit) -> El {
         .child(rune::auto_grow(field, 2, 10))
 }
 
-fn composer(s: &FullUi, core: &Core, k: &Kit) -> El {
+fn composer(s: &Window, core: &Core, k: &Kit) -> El {
     let placeholder = match (&core.t.week.deal, core.streaming) {
         (_, true) => "Steer the agent…",
         (None, _) => "What are we working on?",
@@ -1189,7 +1190,7 @@ fn ended(k: &Kit) -> El {
                     .variant(ButtonVariant::Contrast)
                     .shortcut(cmd("N"))
                     .show_shortcut()
-                    .on_press_tx(|s: &mut FullUi, tx| {
+                    .on_press_tx(|s: &mut Window, tx| {
                         s.leave(Leave::New, tx);
                         s.composer.focused = true;
                     })
@@ -1203,7 +1204,7 @@ fn blank(core: &Core) -> bool {
     core.t.items.is_empty() && core.pending_prompt.is_none()
 }
 
-fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
+fn chat(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El {
     let fanout = Stage::of(core).is_some_and(|stage| stage.wide())
         || core
             .t
@@ -1215,7 +1216,7 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     let body: El = if empty {
         col()
     } else {
-        parts::transcript::<FullUi>(core, k, width)
+        parts::transcript::<Window>(core, k, width)
     };
     let scroll = col()
         .key("transcript")
@@ -1233,7 +1234,7 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     }
     // A dialog takes the composer's place, so keys have one owner.
     if let Some(dialog) =
-        parts::dialog::<FullUi>(core, k, Some(&s.dialog_edit), |s: &mut FullUi| {
+        parts::dialog::<Window>(core, k, Some(&s.dialog_edit), |s: &mut Window| {
             &mut s.dialog_edit
         })
     {
@@ -1274,12 +1275,12 @@ fn chat(s: &FullUi, core: &Core, k: &'static Kit, dark: bool) -> El {
     // Images dropped anywhere on an open chat go to its composer.
     if core.dialog.is_none() && core.t.week.done.is_none() {
         stage = stage
-            .on_drop_files(|s: &mut FullUi, files, _| {
+            .on_drop_files(|s: &mut Window, files, _| {
                 s.dropping = false;
                 attach(s, files.iter().map(|p| Shot::from_file(p)));
             })
             .accepts_files(is_shot_file)
-            .on_drop_hover(|s: &mut FullUi, over, _| s.dropping = over);
+            .on_drop_hover(|s: &mut Window, over, _| s.dropping = over);
     }
     if empty {
         stage = stage.child(dither::slot(dark, s.shore_motion()));
@@ -1339,7 +1340,7 @@ fn scoreboard_empty(k: &Kit) -> El {
                 .variant(ButtonVariant::Outline)
                 .shortcut(cmd("1"))
                 .show_shortcut()
-                .on_press_tx(|s: &mut FullUi, tx| {
+                .on_press_tx(|s: &mut Window, tx| {
                     s.show(Page::Chat, tx);
                     s.composer.focused = true;
                 })
@@ -2070,7 +2071,7 @@ fn wordmark(k: &Kit, past_lights: bool) -> El {
         .truncate()
 }
 
-pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
+pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
     let k = rune_theme_opencode::kit(cx.system_dark());
     let core = lock(&s.core);
     s.reduced_motion
@@ -2084,7 +2085,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     folder_picker::build(s, k, &mut overlays);
     viewer(s, k, &mut overlays);
     let mut window =
-        SplitView::new(main).sidebar(&s.sidebar, |s: &mut FullUi| &mut s.sidebar, side);
+        SplitView::new(main).sidebar(&s.sidebar, |s: &mut Window| &mut s.sidebar, side);
     if s.sidebar.width() - cx.titlebar_inset() >= WORDMARK_ROOM {
         window = window.sidebar_title(wordmark(k, cx.titlebar_inset() > 0.0));
     }
@@ -2105,7 +2106,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
         .pane_motion(PaneMotion::new().spring(Spring::new(0.3, 0.0)))
         .reduced_motion(cx.is_reduced_motion())
         .build(k);
-    rune_kit::root(window, overlays).on_window_focus(|s: &mut FullUi, focused, tx| {
+    rune_kit::root(window, overlays).on_window_focus(|s: &mut Window, focused, tx| {
         s.seal
             .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
         s.window_focused = focused;
@@ -2115,7 +2116,7 @@ pub fn view(s: &FullUi, cx: &mut Cx<FullUi>) -> El {
     })
 }
 
-fn close_viewer(s: &mut FullUi) {
+fn close_viewer(s: &mut Window) {
     s.viewing = None;
     s.composer.focused = true;
 }
@@ -2123,7 +2124,7 @@ fn close_viewer(s: &mut FullUi) {
 /// An image opened from its tile: as large as the window allows, never past its own size, with
 /// its format and size and a way to open it in the system's viewer to zoom. Esc, a click on
 /// it or a click beside it closes it.
-fn viewer(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
+fn viewer(s: &Window, k: &Kit, layer: &mut Vec<El>) {
     let Some(shot) = &s.viewing else {
         return;
     };
@@ -2180,7 +2181,7 @@ fn viewer(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
             Button::new(open_label)
                 .variant(ButtonVariant::Ghost)
                 .control_size(ControlSize::Small)
-                .on_press(|s: &mut FullUi| {
+                .on_press(|s: &mut Window| {
                     let Some(shot) = s.viewing.clone() else {
                         return;
                     };
@@ -2233,7 +2234,7 @@ fn viewer(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
 }
 
 /// A fixed halfway frame for snapshots of the sealing sweep.
-pub fn scene_sealing(s: &mut FullUi) {
+pub fn scene_sealing(s: &mut Window) {
     crate::fixtures::scene_reveal(&s.core);
     let core = lock(&s.core);
     s.seen_task = core.task_id();
@@ -2245,7 +2246,7 @@ pub fn scene_sealing(s: &mut FullUi) {
         .tick(now + Duration::from_millis(325), dither::Motion::Live, true);
 }
 
-pub fn setup(s: &mut FullUi, waker: rune::Waker) {
+pub fn setup(s: &mut Window, waker: rune::Waker) {
     s.images = Some(ImageCache::new(waker.clone()));
     lock(&s.core).add_waker(Arc::new(move || waker()));
 }
@@ -2271,9 +2272,9 @@ mod tests {
         std::mem::take(&mut lock(&core(scene)).t)
     }
 
-    fn window(core: Shared) -> Runtime<FullUi> {
+    fn window(core: Shared) -> Runtime<Window> {
         let mut rt = Runtime::new(
-            FullUi::new(core),
+            Window::new(core),
             view,
             (1180.0, 780.0),
             Env::new(true, 1.0),
@@ -2288,7 +2289,7 @@ mod tests {
     /// What the frame on screen still has in motion: anything moving, fading, growing or
     /// revealing, or drawn otherwise than once every track has landed. A running tool's
     /// spinner loops on purpose.
-    fn in_motion(rt: &mut Runtime<FullUi>) -> Vec<String> {
+    fn in_motion(rt: &mut Runtime<Window>) -> Vec<String> {
         let first = rt.elements();
         rt.frame(1.0);
         let settled: HashMap<String, f32> = rt
@@ -2310,11 +2311,11 @@ mod tests {
             .collect()
     }
 
-    fn shows(rt: &Runtime<FullUi>, path: &str) -> bool {
+    fn shows(rt: &Runtime<Window>, path: &str) -> bool {
         rt.elements().iter().any(|e| e.path.ends_with(path))
     }
 
-    fn title(rt: &Runtime<FullUi>) -> Option<String> {
+    fn title(rt: &Runtime<Window>) -> Option<String> {
         let elements = rt.elements();
         let title = elements
             .iter()
@@ -2328,7 +2329,7 @@ mod tests {
     }
 
     /// A press and release on the element, and the frame drawn right after them.
-    fn click(rt: &mut Runtime<FullUi>, key: &str) {
+    fn click(rt: &mut Runtime<Window>, key: &str) {
         let (x, y) = rt.find(key).unwrap();
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
@@ -2461,7 +2462,7 @@ mod tests {
     fn end_confirmation_fits_the_smallest_window() {
         for dark in [false, true] {
             let mut rt = Runtime::new(
-                FullUi::new(core(crate::fixtures::scene_end)),
+                Window::new(core(crate::fixtures::scene_end)),
                 view,
                 (720.0, 480.0),
                 Env::new(dark, 1.0),
@@ -2606,7 +2607,7 @@ mod tests {
                 "{label}"
             );
         }
-        let lane = |rt: &Runtime<FullUi>, label: &str| {
+        let lane = |rt: &Runtime<Window>, label: &str| {
             rt.elements()
                 .into_iter()
                 .find(|e| e.path.ends_with(&format!("/lane-{label}")))
@@ -2729,7 +2730,7 @@ mod tests {
         let mut rt = window(core);
         click(&mut rt, "Ended/section-header");
         rt.frame(1.0);
-        let find = |rt: &Runtime<FullUi>, tail: &str| {
+        let find = |rt: &Runtime<Window>, tail: &str| {
             rt.elements().into_iter().find(|e| e.path.ends_with(tail))
         };
         let file = path.display();
@@ -2815,7 +2816,7 @@ mod tests {
     }
 
     /// The new task is the frame right after `leave` asks for it.
-    fn new_task_is_the_next_frame(leave: impl Fn(&mut Runtime<FullUi>)) {
+    fn new_task_is_the_next_frame(leave: impl Fn(&mut Runtime<Window>)) {
         let core = core(crate::fixtures::scene_chat);
         let mut rt = window(core.clone());
         leave(&mut rt);

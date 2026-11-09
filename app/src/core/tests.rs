@@ -7,17 +7,17 @@ fn core() -> Core {
 
 #[test]
 fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
-    use crate::ui::full::{self, FullUi};
+    use crate::ui::window::{self, Window};
     use rune::{Env, Runtime};
 
     let shared = Arc::new(Mutex::new(core()));
     let mut rt = Runtime::new(
-        FullUi::new(shared.clone()),
-        full::view,
+        Window::new(shared.clone()),
+        window::view,
         (1180.0, 780.0),
         Env::new(true, 1.0),
     );
-    rt.poll = Some(full::poll);
+    rt.poll = Some(window::poll);
     rt.frame(0.0);
     assert!(
         rt.elements()

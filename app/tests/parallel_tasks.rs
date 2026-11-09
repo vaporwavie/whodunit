@@ -9,7 +9,7 @@ use serde_json::json;
 use whodunit::config::AppConfig;
 use whodunit::core::{Core, Leave, SessionState, Shared, lock, start_unstarted};
 use whodunit::transcript::{Block, Item};
-use whodunit::ui::full::{self, FullUi};
+use whodunit::ui::window::{self, Window};
 
 fn wait(shared: &Shared, done: impl Fn(&Core) -> bool) {
     let until = Instant::now() + Duration::from_secs(15);
@@ -123,8 +123,8 @@ fn run_chats(root: &Path) {
         lock(&shared).toasts
     );
     start_unstarted(&shared);
-    let mut ui = FullUi::new(shared.clone());
-    full::poll(&mut ui, 0.0, &mut Tx::default());
+    let mut ui = Window::new(shared.clone());
+    window::poll(&mut ui, 0.0, &mut Tx::default());
     ui.composer.replace_text("unsent follow-up for A");
     ui.attachments = vec![whodunit::fixtures::screenshot()];
     wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
@@ -133,7 +133,7 @@ fn run_chats(root: &Path) {
     assert_eq!(state(&shared, &a), SessionState::Working);
 
     navigate(&shared, Leave::New);
-    full::poll(&mut ui, 0.0, &mut Tx::default());
+    window::poll(&mut ui, 0.0, &mut Tx::default());
     assert!(
         ui.composer.text.is_empty() && ui.attachments.is_empty(),
         "a new task starts with an empty composer"
@@ -159,7 +159,7 @@ fn run_chats(root: &Path) {
     assert!(answer(&lock(&shared)).is_empty());
 
     navigate(&shared, Leave::Open(a.clone()));
-    full::poll(&mut ui, 0.0, &mut Tx::default());
+    window::poll(&mut ui, 0.0, &mut Tx::default());
     assert_eq!(ui.composer.text, "unsent follow-up for A");
     assert_eq!(ui.attachments, [whodunit::fixtures::screenshot()]);
     assert_eq!(lock(&shared).task_id(), a_id, "reuse A's process");
@@ -177,7 +177,7 @@ fn run_chats(root: &Path) {
 
     // Score dialog remains attached to A while visiting B, including across folders.
     navigate(&shared, Leave::Open(b.clone()));
-    full::poll(&mut ui, 0.0, &mut Tx::default());
+    window::poll(&mut ui, 0.0, &mut Tx::default());
     assert_eq!(ui.composer.text, "unsent follow-up for B");
     assert!(lock(&shared).dialog.is_none());
     assert_ne!(lock(&shared).stats.cost, a_cost);

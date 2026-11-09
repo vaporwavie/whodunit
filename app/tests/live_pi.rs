@@ -11,7 +11,7 @@ use rune::{Key, KeyEvent, Mods};
 use whodunit::config::{self, AppConfig};
 use whodunit::core::{Core, DialogKind, Leave, Shared, lock, start_unstarted};
 use whodunit::transcript::{Block, END_TITLE, Item};
-use whodunit::ui::full::dialog_keys;
+use whodunit::ui::window::dialog_keys;
 
 fn wait_for(shared: &Shared, what: &str, seconds: u64, mut done: impl FnMut(&mut Core) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(seconds);

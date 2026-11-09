@@ -5,7 +5,7 @@ use rune::{Env, Runtime, clipboard};
 use whodunit::config::AppConfig;
 use whodunit::core::{Core, Shared, lock};
 use whodunit::transcript::{Block, FanAnswer, Item};
-use whodunit::ui::full::{self, FullUi};
+use whodunit::ui::window::{self, Window};
 
 fn answer(body: &str, streaming: bool) -> Item {
     Item::Assistant {
@@ -15,25 +15,25 @@ fn answer(body: &str, streaming: bool) -> Item {
     }
 }
 
-fn window(items: Vec<Item>) -> (Shared, Runtime<FullUi>) {
+fn window(items: Vec<Item>) -> (Shared, Runtime<Window>) {
     let core = Arc::new(Mutex::new(Core::new(
         AppConfig::default(),
         "/fixture".into(),
     )));
     lock(&core).t.items = items;
     let mut rt = Runtime::new(
-        FullUi::new(core.clone()),
-        full::view,
+        Window::new(core.clone()),
+        window::view,
         (1180.0, 780.0),
         Env::new(true, 1.0),
     );
-    rt.poll = Some(full::poll);
+    rt.poll = Some(window::poll);
     rt.frame(0.0);
     rt.frame(1.0);
     (core, rt)
 }
 
-fn copy(rt: &mut Runtime<FullUi>, index: usize) {
+fn copy(rt: &mut Runtime<Window>, index: usize) {
     let buttons: Vec<_> = rt
         .elements()
         .into_iter()
@@ -46,7 +46,7 @@ fn copy(rt: &mut Runtime<FullUi>, index: usize) {
     rt.frame(0.0);
 }
 
-fn copied_labels(rt: &Runtime<FullUi>) -> usize {
+fn copied_labels(rt: &Runtime<Window>) -> usize {
     rt.elements()
         .iter()
         .filter(|el| el.text.as_deref() == Some("Copied"))

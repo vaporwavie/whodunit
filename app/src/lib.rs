@@ -13,8 +13,8 @@ pub mod transcript;
 pub mod ui {
     pub mod dither;
     pub mod folder_picker;
-    pub mod full;
     pub mod parts;
     pub mod seal;
     pub mod stage;
+    pub mod window;
 }

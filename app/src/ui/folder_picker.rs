@@ -13,7 +13,7 @@ use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput, glyphs};
 use crate::config::{self, AppConfig};
 use crate::core::{Leave, cmd};
 use crate::folders::{self, Recent};
-use crate::ui::full::FullUi;
+use crate::ui::window::Window;
 
 const ROW_H: f32 = 30.0;
 const LIST_H: f32 = 330.0;
@@ -338,7 +338,7 @@ fn ranked(names: &[String], query: &str, stem: impl Fn(&str) -> String) -> Vec<u
     prefix
 }
 
-pub fn show(s: &mut FullUi) {
+pub fn show(s: &mut Window) {
     let picker = {
         let core = crate::core::lock(&s.core);
         FolderPicker::show(&core.config, &core.cwd, core.wakers())
@@ -347,7 +347,7 @@ pub fn show(s: &mut FullUi) {
     s.composer.focused = false;
 }
 
-pub fn close(s: &mut FullUi) {
+pub fn close(s: &mut Window) {
     s.picker.open = false;
     s.picker.loading = None;
     s.picker.query.focused = false;
@@ -355,23 +355,23 @@ pub fn close(s: &mut FullUi) {
 }
 
 /// The window lost focus, so a ⌘ held for ⌘Tab won't come back up here.
-pub fn release_cmd(s: &mut FullUi, tx: &mut Tx) {
+pub fn release_cmd(s: &mut Window, tx: &mut Tx) {
     s.picker.set_cmd(false, tx);
 }
 
-fn run_in(s: &mut FullUi, path: PathBuf, tx: &mut Tx) {
+fn run_in(s: &mut Window, path: PathBuf, tx: &mut Tx) {
     close(s);
     s.leave(Leave::NewIn(path), tx);
 }
 
-fn pick_here(s: &mut FullUi, tx: &mut Tx) {
+fn pick_here(s: &mut Window, tx: &mut Tx) {
     let dir = s.picker.dir.clone();
     run_in(s, dir, tx);
 }
 
 /// One step: a subfolder opens to its own subfolders, "Go up" opens the parent, a recent runs pi
 /// at once, and with nothing selected the browsed folder runs pi there.
-fn open(s: &mut FullUi, tx: &mut Tx) {
+fn open(s: &mut Window, tx: &mut Tx) {
     let Some(line) = s.picker.highlighted() else {
         pick_here(s, tx);
         return;
@@ -385,7 +385,7 @@ fn open(s: &mut FullUi, tx: &mut Tx) {
 
 /// ↑↓ move, Home and End jump to the ends, ⏎ opens, ⌘⏎ picks the browsed folder, → goes into the
 /// selected subfolder, ⌫ or ← on an empty filter goes up.
-pub fn on_key(s: &mut FullUi, ev: &KeyEvent, tx: &mut Tx) -> bool {
+pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let empty = s.picker.query.text.is_empty();
     match ev.key {
         // Taken, or rune draws no frame for it and the Open button keeps its old label.
@@ -529,8 +529,8 @@ fn line_view(p: &FolderPicker, line: Line, target: usize, k: &Kit) -> El {
     }
     // Pointer movement, not hover: rows scrolling under a resting pointer must not steal the
     // keyboard's selection.
-    item.on_pointer_move(move |s: &mut FullUi, _| s.picker.select(target))
-        .on_press_tx(move |s: &mut FullUi, tx| {
+    item.on_pointer_move(move |s: &mut Window, _| s.picker.select(target))
+        .on_press_tx(move |s: &mut Window, tx| {
             s.picker.select(target);
             open(s, tx);
         })
@@ -591,7 +591,7 @@ fn footer(p: &FolderPicker, k: &Kit) -> El {
                     .variant(ButtonVariant::Contrast)
                     .shortcut(if p.cmd { cmd("⏎") } else { "⏎".into() })
                     .show_shortcut()
-                    .on_press_tx(|s: &mut FullUi, tx| {
+                    .on_press_tx(|s: &mut Window, tx| {
                         if s.picker.cmd {
                             pick_here(s, tx);
                             return;
@@ -603,7 +603,7 @@ fn footer(p: &FolderPicker, k: &Kit) -> El {
         )
 }
 
-pub fn build(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
+pub fn build(s: &Window, k: &Kit, layer: &mut Vec<El>) {
     let p = &s.picker;
     if !p.open {
         return;
@@ -612,8 +612,8 @@ pub fn build(s: &FullUi, k: &Kit, layer: &mut Vec<El>) {
         .leading_icon(k.glyph.search)
         .placeholder("Filter folders")
         .width(None)
-        .on_edit(|s: &mut FullUi| &mut s.picker.query)
-        .on_change(|s: &mut FullUi, _| s.picker.filtered())
+        .on_edit(|s: &mut Window| &mut s.picker.query)
+        .on_change(|s: &mut Window, _| s.picker.filtered())
         .on_key(on_key)
         .active_descendant(p.selected_line().map(|line| format!("line-{line}")))
         .build(k)

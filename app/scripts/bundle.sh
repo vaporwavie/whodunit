@@ -23,7 +23,7 @@ bundle() {
   rm -rf "$app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
   cp target/release/whodunit "$app/Contents/MacOS/whodunit"
-  icns assets/icons/full.png "$app/Contents/Resources/AppIcon.icns"
+  icns assets/icons/app.png "$app/Contents/Resources/AppIcon.icns"
   cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -50,7 +50,7 @@ install_linux() {
   for size in 32 48 64 128 256 512; do
     local icon="$share/icons/hicolor/${size}x${size}/apps/whodunit.png"
     mkdir -p "${icon:h}"
-    magick assets/icons/full.png -resize ${size}x${size} "$icon"
+    magick assets/icons/app.png -resize ${size}x${size} "$icon"
   done
   mkdir -p "${desktop:h}"
   cat > "$desktop" <<DESKTOP

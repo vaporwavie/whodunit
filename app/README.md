@@ -46,6 +46,8 @@ Typing filters both lists and selects the first match. **Go up**, always the fir
 
 ## Keys
 
+On Linux, read ⌘ as Ctrl.
+
 | Key | Does |
 |---|---|
 | ⌘D | End the run |

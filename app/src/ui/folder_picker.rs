@@ -11,13 +11,18 @@ use rune::{
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput, glyphs};
 
 use crate::config::{self, AppConfig};
+use crate::core::cmd;
 use crate::folders::{self, Recent};
 use crate::ui::full::FullUi;
 
 const ROW_H: f32 = 30.0;
 const LIST_H: f32 = 330.0;
-/// Wide enough for "Select ⌘⏎", so holding ⌘ doesn't nudge Cancel.
-const OPEN_SLOT_W: f32 = 100.0;
+/// Wide enough for "Select ⌘⏎" ("Select Ctrl+⏎" off macOS), so holding ⌘ doesn't nudge Cancel.
+const OPEN_SLOT_W: f32 = if cfg!(target_os = "macos") {
+    100.0
+} else {
+    124.0
+};
 const RECENT: &str = "Recent";
 /// Only drawn under the recents, with a rule above it, to end their group.
 const BROWSE: &str = "Browse";
@@ -583,7 +588,7 @@ fn footer(p: &FolderPicker, k: &Kit) -> El {
             row().w(OPEN_SLOT_W).justify_end().child(
                 Button::new(if p.cmd { "Select" } else { "Open" })
                     .variant(ButtonVariant::Contrast)
-                    .shortcut(if p.cmd { "⌘⏎" } else { "⏎" })
+                    .shortcut(if p.cmd { cmd("⏎") } else { "⏎".into() })
                     .show_shortcut()
                     .on_press(|s: &mut FullUi| {
                         if s.picker.cmd {

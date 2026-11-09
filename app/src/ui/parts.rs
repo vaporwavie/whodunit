@@ -12,7 +12,7 @@ use rune_kit::{
 };
 use serde_json::json;
 
-use crate::core::{Core, DialogKind, Shared, lock, score_key};
+use crate::core::{Core, DialogKind, Shared, cmd, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item};
 
 pub trait HasCore: 'static {
@@ -800,7 +800,7 @@ pub fn leave_guard<S: HasCore>(core: &Core, k: &Kit) -> Option<El> {
             .gap(12.0)
             .padding(16.0)
             .child(text("This run hasn’t ended").font(k.ty.body_medium).color(c.text_base))
-            .child(text("House rule 4: end every run with ⌘D. A run left open shows on the scoreboard as unrated.").font(k.ty.small).color(c.text_muted).wrap())
+            .child(text(format!("House rule 4: end every run with {}. A run left open shows on the scoreboard as unrated.", cmd("D"))).font(k.ty.small).color(c.text_muted).wrap())
             .child(
                 row()
                     .gap(8.0)

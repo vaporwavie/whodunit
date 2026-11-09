@@ -15,6 +15,15 @@ use crate::transcript::{END_TITLE, Item, Transcript, str_of};
 
 pub type Shared = Arc<Mutex<Core>>;
 
+/// A primary-modifier shortcut as this platform labels it: ⌘N on macOS, Ctrl+N elsewhere.
+pub fn cmd(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}
+
 pub fn lock(shared: &Shared) -> MutexGuard<'_, Core> {
     shared
         .lock()
@@ -272,7 +281,10 @@ impl Core {
             return;
         }
         if self.t.week.done.is_some() && !text.starts_with('/') {
-            self.toast("This run has ended. ⌘N for the next task.", "info");
+            self.toast(
+                format!("This run has ended. {} for the next task.", cmd("N")),
+                "info",
+            );
             return;
         }
         if let Some(command) = text.strip_prefix('!') {

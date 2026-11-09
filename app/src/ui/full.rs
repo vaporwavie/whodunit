@@ -19,7 +19,7 @@ use rune_kit::{
 };
 
 use crate::config;
-use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, lock, score_key};
+use crate::core::{APP_COMMANDS, Core, DialogKind, Leave, Shared, cmd, lock, score_key};
 use crate::scoreboard::{self, Board};
 use crate::sessions::Summary;
 use crate::transcript::Item;
@@ -429,7 +429,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
         .header(
             SidebarRow::new("New task")
                 .icon(&PLUS)
-                .detail("⌘N")
+                .detail(cmd("N"))
                 .height(32.0)
                 .on_select(|s: &mut FullUi, _| {
                     s.page = Page::Chat;
@@ -442,7 +442,7 @@ fn sidebar(s: &FullUi, core: &Core, k: &Kit) -> El {
         .header(
             SidebarRow::new("Scoreboard")
                 .icon(&CHART)
-                .detail("⌘2")
+                .detail(cmd("2"))
                 .height(32.0)
                 .selected(s.page == Page::Scoreboard)
                 .on_select(|s: &mut FullUi, _| s.open_scoreboard())
@@ -565,7 +565,7 @@ fn workspace_button(core: &Core, k: &Kit) -> El {
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Small)
         .help("Change the folder pi works in")
-        .shortcut("⌘O")
+        .shortcut(cmd("O"))
         .on_press(folder_picker::show)
         .build(k)
         .key("workspace")
@@ -603,7 +603,9 @@ fn send_button(s: &FullUi, core: &Core, k: &Kit) -> El {
         .disabled(empty)
         .on_press_tx(|s: &mut FullUi, tx: &mut Tx| submit(s, tx, false));
     let button = if core.streaming {
-        button.label("Steer").help("Steer  ⏎ · Queue  ⌘⏎")
+        button
+            .label("Steer")
+            .help(format!("Steer  ⏎ · Queue  {}", cmd("⏎")))
     } else {
         button.label("Send").shortcut("⏎")
     };
@@ -685,7 +687,7 @@ fn empty_intro(k: &Kit) -> El {
                 .color(c.text_base),
         )
         .child(
-            text("Describe the task below. The role and the agent stay hidden until you end the run with ⌘D.")
+            text(format!("Describe the task below. The role and the agent stay hidden until you end the run with {}.", cmd("D")))
                 .font(k.ty.ui)
                 .color(c.text_muted)
                 .wrap(),
@@ -720,7 +722,7 @@ fn ended(k: &Kit) -> El {
             .child(
                 Button::new("New task")
                     .variant(ButtonVariant::Contrast)
-                    .shortcut("⌘N")
+                    .shortcut(cmd("N"))
                     .show_shortcut()
                     .on_press(|s: &mut FullUi| {
                         s.page = Page::Chat;
@@ -816,7 +818,7 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
                 })
                 .disabled(!core.can_end_run())
                 .control_size(ControlSize::Small)
-                .shortcut("⌘D")
+                .shortcut(cmd("D"))
                 .show_shortcut()
                 .on_press(|s: &mut FullUi| lock(&s.core).end_run())
                 .build(k)
@@ -842,12 +844,12 @@ fn scoreboard_empty(k: &Kit) -> El {
         .pt(100.0)
         .items_center()
         .child(text("No rated runs yet").font(k.ty.body_medium).color(c.text_base))
-        .child(text(format!("Finish a task and end it with ⌘D. Each role gets a table here, and an agent needs {} runs to rank.", scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
+        .child(text(format!("Finish a task and end it with {}. Each role gets a table here, and an agent needs {} runs to rank.", cmd("D"), scoreboard::TOO_FEW)).font(k.ty.small).color(c.text_muted))
         .child(
             row().pt(8.0).child(
                 Button::new("Start a task")
                 .variant(ButtonVariant::Outline)
-                .shortcut("⌘1")
+                .shortcut(cmd("1"))
                 .show_shortcut()
                 .on_press(|s: &mut FullUi| {
                     s.page = Page::Chat;

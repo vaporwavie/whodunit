@@ -76,12 +76,16 @@ static MODELS: LazyLock<HashMap<String, Art>> =
 /// The same model art at one point per pixel, 12 points square: the sidebar's role tooltip.
 static MODEL_ICONS: LazyLock<HashMap<String, Art>> =
     LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 1));
+/// The same model art at two points per pixel, 24 points square: a scoreboard table row.
+static MODEL_SMALL: LazyLock<HashMap<String, Art>> =
+    LazyLock::new(|| load(include_str!("../assets/sprites/models.json"), 2));
 static MODEL_ALIASES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../assets/sprites/model-aliases.json"))
         .expect("model aliases are checked in and valid")
 });
+/// Decider art at two points per pixel, 24 points square: beside a class card's shares.
 static DECIDERS: LazyLock<HashMap<String, Art>> =
-    LazyLock::new(|| load(include_str!("../assets/sprites/deciders.json"), 3));
+    LazyLock::new(|| load(include_str!("../assets/sprites/deciders.json"), 2));
 
 fn pick<'a>(set: &'a HashMap<String, Art>, key: &str) -> &'a Art {
     set.get(key).unwrap_or_else(|| &set["fallback"])
@@ -105,6 +109,10 @@ pub fn model(agent: &str) -> &'static Art {
 
 pub fn model_icon(agent: &str) -> &'static Art {
     &MODEL_ICONS[model_key(agent)]
+}
+
+pub fn model_small(agent: &str) -> &'static Art {
+    &MODEL_SMALL[model_key(agent)]
 }
 
 /// The deal source's icon (`jev`, `picker`, `forced`, `fallback`); unknown sources count as

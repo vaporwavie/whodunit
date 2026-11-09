@@ -484,7 +484,12 @@ pub fn board() -> crate::scoreboard::Board {
                     fallback: 0,
                 },
                 rows: vec![
-                    board_row("Opus 5.5", 9, 7, 39.0, &[4.0, 6.5, 3.0], 0.412, 0, 0),
+                    // One run still open, so unrated.
+                    crate::scoreboard::Row {
+                        rated: 8,
+                        unrated: 1,
+                        ..board_row("Opus 5.5", 9, 7, 35.0, &[4.0, 6.5, 3.0], 0.412, 0, 0)
+                    },
                     board_row("GPT-6.1 Sol", 7, 4, 26.0, &[7.0, 9.5], 0.091, 0, 0),
                     board_row(
                         "Kimi K3.1 Pro with a long display name",
@@ -509,8 +514,9 @@ pub fn board() -> crate::scoreboard::Board {
                     fallback: 0,
                 },
                 rows: vec![
-                    board_row("GPT-6 Astra", 3, 3, 14.0, &[8.0, 12.5], 1.21, 0, 0),
-                    board_row("Opus 5.5", 3, 2, 12.0, &[6.0], 0.88, 0, 0),
+                    // Nobody has the runs to rank yet, so the class has no leader.
+                    board_row("GPT-6 Astra", 2, 2, 9.0, &[8.0, 12.5], 1.21, 0, 0),
+                    board_row("Opus 5.5", 1, 0, 4.0, &[6.0], 0.88, 0, 0),
                 ],
             },
             Table {

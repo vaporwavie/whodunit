@@ -533,7 +533,8 @@ fn assistant_view<S: HasCore>(
             _ => {}
         }
     }
-    if streaming && latest.is_none() {
+    let dealing = matches!(Stage::of(core), Some(Stage::Dealing { .. }));
+    if streaming && latest.is_none() && !dealing {
         column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think")));
     }
     if let Some(error) = error {

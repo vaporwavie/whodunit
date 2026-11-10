@@ -146,6 +146,8 @@ pub struct Task {
     pub pending_prompt: Option<String>,
     /// The images sent with `pending_prompt`, shown with it until pi echoes the message.
     pub pending_shots: Vec<Shot>,
+    /// When the first prompt went out, so the deck gets a full deal before it gives way.
+    pub dealing_since: Option<Instant>,
     pub queue: (Vec<String>, Vec<String>),
     pub stats: Stats,
     pub dialog: Option<Dialog>,
@@ -509,6 +511,7 @@ impl Core {
         if first {
             self.pending_prompt = Some(text.to_owned());
             self.pending_shots = shots.to_vec();
+            self.dealing_since = Some(Instant::now());
         }
         let mut record = json!({"type": "prompt", "message": text});
         if !shots.is_empty() {

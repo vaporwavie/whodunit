@@ -67,6 +67,8 @@ struct Seen {
     loads: u64,
     /// Whether the chat was sealed; None before the first look.
     done: Option<bool>,
+    /// Whether the deck showed, so the frame its hold ends rebuilds while nothing animates.
+    dealing: bool,
 }
 
 pub struct Window {
@@ -438,6 +440,16 @@ pub fn poll(s: &mut Window, _t: f64, tx: &mut Tx) -> bool {
     }
     let start = !core.unstarted.is_empty();
     let at_work = Stage::of(&core);
+    let dealing = matches!(at_work, Some(Stage::Dealing { .. }));
+    changed |= dealing != s.seen.dealing;
+    s.seen.dealing = dealing;
+    if let Some(left) = core
+        .dealing_since
+        .filter(|_| dealing)
+        .and_then(|since| stage::DEAL_HOLD.checked_sub(since.elapsed()))
+    {
+        tx.wake_after(left);
+    }
     s.lanes.track(at_work.as_ref());
     let live = s.page == Page::Chat
         && (chat::blank(&core) || at_work.is_some())

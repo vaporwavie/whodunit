@@ -22,12 +22,17 @@ pub const SETTLED: f32 = 60.0;
 const DEAL_H: f32 = 72.0;
 const SCAN_H: f32 = 15.0;
 const BUS_H: f32 = 6.0;
+/// One pass of the deck (the shader's `DEAL_CYCLE`): split, riffle, deal a card off. A quick
+/// deal still plays it through, unless the answer starts first.
+pub const DEAL_HOLD: std::time::Duration = std::time::Duration::from_millis(2600);
 
 /// What the tail of a working chat shows.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stage {
-    /// Classifying the prompt and dealing a hidden agent.
-    Dealing,
+    /// Classifying the prompt and dealing a hidden agent; the deck starts its pass at `since`.
+    Dealing {
+        since: Option<std::time::Instant>,
+    },
     Working,
     /// Working, with the live message thinking: its own thinking block moves, so the tail
     /// stays empty rather than stack a second animation under it.
@@ -102,8 +107,19 @@ impl Stage {
         if let Some(fanout) = widget.and_then(|line| Fanout::parse(line)) {
             return Some(Stage::Fanout(fanout));
         }
-        if core.pending_prompt.is_some() && core.t.week.deal.is_none() {
-            return Some(Stage::Dealing);
+        let dealing = core.pending_prompt.is_some() && core.t.week.deal.is_none();
+        let held = core
+            .dealing_since
+            .is_some_and(|since| since.elapsed() < DEAL_HOLD)
+            && (core.streaming || core.pending_prompt.is_some())
+            && !matches!(
+                core.t.items.last(),
+                Some(Item::Assistant { blocks, .. }) if blocks.iter().flatten().next().is_some()
+            );
+        if dealing || held {
+            return Some(Stage::Dealing {
+                since: core.dealing_since,
+            });
         }
         if !core.streaming {
             return None;
@@ -210,10 +226,19 @@ fn slot(k: &Kit, motion: Motion, kind: u8, seed: usize, age: f32) -> El {
 /// The tail of a working chat. `age` is how long ago a lane last changed state.
 pub fn view(stage: &Stage, motion: Motion, age: impl Fn(&str) -> f32, k: &Kit) -> El {
     match stage {
-        Stage::Dealing => slot(k, motion, DEAL, 0, 0.0)
-            .key("stage-deal")
-            .w_full()
-            .h(DEAL_H),
+        // The pass starts from the split; without a start (or held still) it follows the clock.
+        Stage::Dealing { since } => slot(
+            k,
+            motion,
+            DEAL,
+            0,
+            since
+                .filter(|_| motion != Motion::Still)
+                .map_or(-1.0, |since| since.elapsed().as_secs_f32()),
+        )
+        .key("stage-deal")
+        .w_full()
+        .h(DEAL_H),
         Stage::Working => slot(k, motion, SCAN, 0, 0.0)
             .key("stage-scan")
             .w_full()
@@ -364,6 +389,7 @@ fn sd_box(q: vec2f, half: vec2f, r: f32) -> f32 {
 // The deck: it splits, riffles back together card by card, and deals the top card off.
 const CARD: vec2f = vec2f(15.0, 21.0);
 const CARDS: i32 = 6;
+const DEAL_CYCLE: f32 = 2.6;
 
 // A card back: an edge, a gap, then a diamond lattice.
 fn card_face(q: vec2f, d: f32, depth: f32) -> vec4f {
@@ -375,7 +401,7 @@ fn card_face(q: vec2f, d: f32, depth: f32) -> vec4f {
 }
 
 fn deal(pt: vec2f, size: vec2f, t: f32) -> vec4f {
-    let ph = fract(t / 2.6);
+    let ph = fract(t / DEAL_CYCLE);
     let centre = size * 0.5;
     // The dealt card leaves the top of the deck for the right, thinning out as it goes.
     let gone = smoothstep(0.72, 0.98, ph);
@@ -539,7 +565,7 @@ fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     let rows = max(u32(p.rect.w / PITCH), 1u);
     var ink = vec4f(0.0);
     switch kind {
-        case 0u: { ink = deal(pt, size, t); }
+        case 0u: { ink = deal(pt, size, select(t, p.origin.w, p.origin.w >= 0.0)); }
         case 1u: { ink = scan(pt, size, cell, rows, t); }
         case 5u: { ink = think(pt, size, cell, t); }
         case 6u: { ink = sealed(pt, size, cell); }

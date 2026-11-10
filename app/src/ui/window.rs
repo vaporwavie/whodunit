@@ -18,11 +18,11 @@ use crate::core::{Core, DialogKind, Leave, Shared, lock, score_key};
 use crate::folders;
 use crate::scoreboard::{self, Board};
 use crate::sprites;
-use crate::transcript::Shot;
+use crate::transcript::{Block, Item, Shot};
 use crate::ui::dither;
 use crate::ui::parts::{self, HasCore};
-use crate::ui::seal;
 use crate::ui::stage::{self, Stage};
+use crate::ui::{develop, seal};
 use folder_picker::FolderPicker;
 
 mod board;
@@ -71,6 +71,8 @@ struct Seen {
     loads: u64,
     /// Whether the chat was sealed; None before the first look.
     done: Option<bool>,
+    /// The selected chat's settled turns, so each new end of turn develops its answer once.
+    turns: u64,
     /// Whether the deck showed, so the frame its hold ends rebuilds while nothing animates.
     dealing: bool,
 }
@@ -110,6 +112,7 @@ pub struct Window {
     lanes: stage::LaneClock,
     handoff: stage::Handoff,
     seal: seal::Sweep,
+    develop: develop::Develop,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
     seen: Seen,
@@ -168,6 +171,10 @@ impl HasCore for Window {
     fn lane_age(&self, label: &str) -> f32 {
         self.lanes.age(label)
     }
+
+    fn develop(&self, key: &str) -> Option<f32> {
+        self.develop.at(key)
+    }
 }
 
 impl Window {
@@ -201,6 +208,7 @@ impl Window {
             lanes: stage::LaneClock::default(),
             handoff: stage::Handoff::default(),
             seal: seal::Sweep::default(),
+            develop: develop::Develop::default(),
             slash_pick: (String::new(), 0),
             seen: Seen::default(),
             drafts: HashMap::new(),
@@ -441,12 +449,22 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
         s.preview_sources.clear();
         s.handoff = stage::Handoff::default();
         s.seal.clear();
+        s.develop.clear();
         tx.settle();
     } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
         s.seal.start(Instant::now());
         tx.settle();
     }
     s.seen.done = Some(done);
+    if !switched
+        && !reloaded
+        && core.turns != s.seen.turns
+        && s.page == Page::Chat
+        && let Some(index) = answer_to_develop(core)
+    {
+        s.develop.start(Instant::now(), format!("item-{index}"));
+    }
+    s.seen.turns = core.turns;
     if changed {
         let built = parts::tool_diffs(core, |id| s.diffs.contains_key(id));
         s.diffs.extend(
@@ -478,6 +496,20 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     changed
 }
 
+/// The answer a settled turn ends on: the transcript's last item, when it's the agent's and
+/// has text. A fan-out, a shell command or a failed reply gets no pass.
+fn answer_to_develop(core: &Core) -> Option<usize> {
+    let index = core.t.items.len().checked_sub(1)?;
+    let Item::Assistant { blocks, error, .. } = &core.t.items[index] else {
+        return None;
+    };
+    let text = blocks
+        .iter()
+        .flatten()
+        .any(|block| matches!(block, Block::Text(body) if !body.is_empty()));
+    (error.is_none() && text).then_some(index)
+}
+
 /// A chat selected without a pi process gets one from `poll`, off the UI thread. Ask for that
 /// frame, since a switch leaves nothing animating to bring it.
 fn start_soon(core: &Core, tx: &mut Tx) {
@@ -501,11 +533,15 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     let mut changed = s.copied_code.len() != before;
     changed |= s.picker.poll();
     changed |= catch_up(s, &core, tx);
-    let sweeping = s.seal.progress().is_some();
+    let sweeping = s.seal.progress().is_some() || s.develop.progress().is_some();
     s.seal
         .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
+    s.develop
+        .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
     changed |= sweeping;
-    if s.seal.progress().is_some() && s.shore_motion() == dither::Motion::Live {
+    if (s.seal.progress().is_some() || s.develop.progress().is_some())
+        && s.shore_motion() == dither::Motion::Live
+    {
         tx.wake_after(dither::FRAME);
     }
     let second = core.turn_started.map(|started| started.elapsed().as_secs());
@@ -650,6 +686,8 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
     rune_kit::root(window, overlays).on_window_focus(|s: &mut Window, focused, tx| {
         s.seal
             .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
+        s.develop
+            .tick(Instant::now(), s.shore_motion(), s.page == Page::Chat);
         s.window_focused = focused;
         if !focused {
             folder_picker::release_cmd(s, tx);
@@ -669,6 +707,20 @@ pub fn scene_thinking_merge(s: &mut Window) {
         .track(0.0, Some(&Stage::Thinking), dither::Motion::Live);
     s.handoff
         .track(0.14, Some(&Stage::Thinking), dither::Motion::Live);
+}
+
+/// A fixed halfway frame of the pass that develops an answer at the end of its turn.
+pub fn scene_developing(s: &mut Window) {
+    crate::fixtures::scene_chat(&s.core);
+    let core = lock(&s.core);
+    s.seen.task = core.task_id();
+    s.seen.loads = core.loads;
+    s.seen.turns = core.turns;
+    let index = answer_to_develop(&core).expect("the chat ends on an answer");
+    let now = Instant::now();
+    s.develop.start(now, format!("item-{index}"));
+    s.develop
+        .tick(now + Duration::from_millis(300), dither::Motion::Live, true);
 }
 
 /// A fixed halfway frame for snapshots of the sealing sweep.

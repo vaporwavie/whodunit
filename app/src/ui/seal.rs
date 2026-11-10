@@ -9,12 +9,27 @@ use super::dither::{self, Motion};
 pub const MARK: u32 = 0x5ea1;
 const SECONDS: f32 = 0.65;
 
-#[derive(Default)]
+/// A one-shot clock for a sweep: it runs only while the window is focused, and never under
+/// Reduce Motion or on another page.
 pub struct Sweep {
+    seconds: f32,
     active: Option<(Instant, f32)>,
 }
 
+impl Default for Sweep {
+    fn default() -> Sweep {
+        Sweep::lasting(SECONDS)
+    }
+}
+
 impl Sweep {
+    pub fn lasting(seconds: f32) -> Sweep {
+        Sweep {
+            seconds,
+            active: None,
+        }
+    }
+
     pub fn start(&mut self, now: Instant) {
         self.active = Some((now, 0.0));
     }
@@ -24,7 +39,7 @@ impl Sweep {
     }
 
     pub fn progress(&self) -> Option<f32> {
-        self.active.map(|(_, elapsed)| elapsed / SECONDS)
+        self.active.map(|(_, elapsed)| elapsed / self.seconds)
     }
 
     pub fn tick(&mut self, now: Instant, motion: Motion, visible: bool) {
@@ -39,7 +54,7 @@ impl Sweep {
             *elapsed += now.saturating_duration_since(*last).as_secs_f32();
         }
         *last = now;
-        if *elapsed >= SECONDS {
+        if *elapsed >= self.seconds {
             self.clear();
         }
     }

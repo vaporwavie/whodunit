@@ -105,6 +105,7 @@ fn main() {
             ("end", |s: &mut Window| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut Window| fixtures::scene_reveal(&s.core)),
             ("sealing", window::scene_sealing),
+            ("developing", window::scene_developing),
             ("fanout", |s: &mut Window| fixtures::scene_fanout(&s.core)),
             ("dealing", |s: &mut Window| fixtures::scene_dealing(&s.core)),
             ("working", |s: &mut Window| fixtures::scene_working(&s.core)),

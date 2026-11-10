@@ -8,7 +8,7 @@ use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::{El, Spring, SpringPair, Transition, effect};
 
 use crate::ui::window::Window;
-use crate::ui::{seal, stage};
+use crate::ui::{develop, seal, stage};
 
 const MARK: u32 = 0xd17e;
 /// Dot art reads as motion at this rate, at half the cost of the display's.
@@ -200,13 +200,25 @@ pub fn pipeline_for(
     source: &str,
     immediates: usize,
 ) -> wgpu::RenderPipeline {
+    pipeline_with(device, format, label, source, immediates, &[])
+}
+
+/// `pipeline_for` with bind groups, for a slot that reads its backdrop.
+pub fn pipeline_with(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &str,
+    source: &str,
+    immediates: usize,
+    groups: &[Option<&wgpu::BindGroupLayout>],
+) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[],
+        bind_group_layouts: groups,
         immediate_size: immediates as u32,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -268,13 +280,14 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
 }
 
 /// Draws frames only when asked: `window::poll` paces the motion at `FRAME`. Paints the shore and
-/// the working chat's stage (`stage::MARK`).
+/// the working chat's stage (`stage::MARK`), the seal and the end-of-turn pass (`develop::MARK`).
 #[derive(Default)]
 pub struct Waves {
     device: Option<DeviceKey>,
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     stage_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     seal_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    develop: HashMap<wgpu::TextureFormat, develop::Gpu>,
     /// The shore's clock: it advances only while live, so a pause resumes where it stopped.
     shore: f32,
     /// The stage's clock, kept the same way.
@@ -293,6 +306,7 @@ impl Compositor<Window> for Waves {
             self.pipelines.clear();
             self.stage_pipelines.clear();
             self.seal_pipelines.clear();
+            self.develop.clear();
             self.device = Some(key);
         }
         let clear = f.rt.clear_color();
@@ -317,7 +331,15 @@ impl Compositor<Window> for Waves {
         let pipelines = &mut self.pipelines;
         let stage_pipelines = &mut self.stage_pipelines;
         let seal_pipelines = &mut self.seal_pipelines;
+        let develops = &mut self.develop;
         f.ui.draw_with(f.encoder, f.target, clear, &mut |pass, site| {
+            if site.mark == develop::MARK {
+                let gpu = develops
+                    .entry(site.format)
+                    .or_insert_with(|| develop::gpu(device, site.format));
+                develop::draw(gpu, device, pass, site, srgb);
+                return;
+            }
             if site.mark == seal::MARK {
                 let pipeline = seal_pipelines
                     .entry(site.format)

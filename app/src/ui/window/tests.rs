@@ -1199,3 +1199,34 @@ fn command_i_focuses_the_composer_from_any_page() {
     assert!(shows(&rt, "/composer-frame"));
     assert!(rt.state.draft.composer.focused);
 }
+
+#[test]
+fn a_settled_turn_develops_its_answer_once() {
+    let core = core(crate::fixtures::scene_chat);
+    let mut rt = window(core.clone());
+    assert!(!shows(&rt, "/develop"));
+    let settle = |core: &Shared| {
+        let mut core = lock(core);
+        core.turns += 1;
+        core.version += 1;
+    };
+    settle(&core);
+    rt.frame(0.016);
+    assert!(rt.state.develop.at("item-1").is_some());
+    assert!(shows(&rt, "/develop"));
+
+    rt.update(|s, _| s.develop.clear());
+    lock(&core).t.items.push(Item::Bash {
+        command: "cargo test".into(),
+        output: String::new(),
+        exit_code: Some(0),
+        running: false,
+    });
+    settle(&core);
+    rt.frame(0.016);
+    assert!(
+        rt.state.develop.progress().is_none(),
+        "a turn that doesn't end on an answer gets no pass"
+    );
+    assert!(!shows(&rt, "/develop"));
+}

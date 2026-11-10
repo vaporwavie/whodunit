@@ -19,7 +19,7 @@ use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item, Shot};
 use crate::ui::dither::Motion;
 use crate::ui::stage::{self, Fanout, Stage};
-use crate::ui::design_system;
+use crate::ui::{design_system, develop};
 
 pub trait HasCore: 'static {
     fn core(&self) -> &Shared;
@@ -47,6 +47,10 @@ pub trait HasCore: 'static {
     /// Seconds since a fan-out lane last changed state.
     fn lane_age(&self, _label: &str) -> f32 {
         stage::SETTLED
+    }
+    /// How far the end-of-turn pass is over the answer keyed `key`, while it runs.
+    fn develop(&self, _key: &str) -> Option<f32> {
+        None
     }
 }
 
@@ -730,6 +734,7 @@ fn assistant_view<S: HasCore>(
     for (index, block) in blocks.iter().enumerate() {
         match block {
             Some(Block::Text(body)) if !body.is_empty() => {
+                // Its texts join the transcript's selection rather than keeping one of their own.
                 let md = markdown(s, body.clone(), format!("{key}-md{index}"), k)
                     .streaming(streaming)
                     .build(k)
@@ -785,6 +790,9 @@ fn assistant_view<S: HasCore>(
             "Provider error. The message can name the lab, so it shows after /done.".to_owned()
         };
         column = column.child(text(shown).font(k.ty.small).color(c.danger.fg).wrap());
+    }
+    if let Some(progress) = s.develop(key) {
+        column = column.child(develop::slot(progress, k));
     }
     column
 }

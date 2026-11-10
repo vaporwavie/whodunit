@@ -174,7 +174,10 @@ pub struct Task {
     pub session_file: Option<String>,
     pub streaming: bool,
     /// When the agent started its current turn, for the working timer.
+    #[serde(with = "crate::service::elapsed")]
     pub turn_started: Option<Instant>,
+    /// Bumped each time the agent settles, so the window marks the end of each turn once.
+    pub turns: u64,
     /// The first prompt stays visible through the deal until its message or fan-out arrives.
     pub pending_prompt: Option<String>,
     /// The images sent with `pending_prompt`, shown with it until pi echoes the message.
@@ -819,6 +822,7 @@ impl Core {
             }
             "agent_settled" => {
                 self.streaming = false;
+                self.turns += 1;
                 self.turn_started = None;
                 self.pending_prompt = None;
                 self.refresh_stats();

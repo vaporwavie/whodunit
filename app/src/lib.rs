@@ -13,6 +13,7 @@ pub mod sprites;
 pub mod transcript;
 pub mod ui {
     pub mod design_system;
+    pub mod develop;
     pub mod dither;
     pub mod parts;
     pub mod seal;

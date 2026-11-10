@@ -137,10 +137,6 @@ impl Stage {
         })
     }
 
-    pub fn wide(&self) -> bool {
-        matches!(self, Stage::Fanout(_))
-    }
-
     /// Whether the transcript gives it a row of its own.
     pub fn shows(&self) -> bool {
         *self != Stage::Thinking
@@ -559,8 +555,7 @@ fn line_len(line: i32, salt: u32) -> f32 {
 }
 
 fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
-    let room = min(size.x, 440.0);
-    if (pt.x > room) { return vec4f(0.0); }
+    let room = size.x;
     // Start with two redacted lines; a new one writes in as the oldest scrolls away.
     let progress = t / 1.7;
     let n = floor(progress) + 2.0;
@@ -602,7 +597,7 @@ fn sealed(pt: vec2f, size: vec2f, cell: vec2u) -> vec4f {
     if (pt.y - m * PITCH_LINE >= LINE) { return vec4f(0.0); }
     let line = i32(m);
     let salt = u32(p.origin.z) * 7919u;
-    let len = min(size.x, 420.0) * line_len(line + 1, salt);
+    let len = size.x * line_len(line + 1, salt);
     if (pt.x > len || !redaction(pt.x, line + i32(salt % 997u), cell, 0.0)) { return vec4f(0.0); }
     return vec4f(p.base.rgb, 0.7);
 }

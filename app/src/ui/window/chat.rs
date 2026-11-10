@@ -6,13 +6,11 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 use super::composer::{self, attach, is_shot_file};
 use super::{Window, request_end};
 use crate::core::{Core, Leave, cmd};
-use crate::transcript::{Item, Shot};
-use crate::ui::stage::Stage;
+use crate::transcript::Shot;
 use crate::ui::{dither, parts, seal};
 
-pub(super) const COLUMN: f32 = 680.0;
-/// A fan-out's cards sit side by side, so its session takes the wider column throughout.
-const FANOUT_COLUMN: f32 = 820.0;
+/// Wide enough for a fan-out's cards side by side, so every chat reads at one width.
+pub(super) const COLUMN: f32 = 820.0;
 
 /// Sits on the composer, inset to its text, so reading it leads straight into typing.
 fn empty_intro(k: &Kit) -> El {
@@ -81,13 +79,7 @@ pub(super) fn blank(core: &Core) -> bool {
 }
 
 pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El {
-    let fanout = Stage::of(core).is_some_and(|stage| stage.wide())
-        || core
-            .t
-            .items
-            .iter()
-            .any(|item| matches!(item, Item::Fanout { .. }));
-    let width = if fanout { FANOUT_COLUMN } else { COLUMN };
+    let width = COLUMN;
     let empty = blank(core);
     let body: El = if empty {
         col()

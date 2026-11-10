@@ -604,8 +604,8 @@ fn a_fanout_lays_its_lanes_where_the_answers_will_land() {
     let (a, c) = (lane(&rt, "A"), lane(&rt, "C"));
     assert!((a[2] - c[2]).abs() < 0.5, "lanes share the row evenly");
     assert!(
-        c[0] + c[2] - a[0] > chat::COLUMN,
-        "a fan-out takes the wide column"
+        c[0] + c[2] - a[0] > chat::COLUMN - 1.0,
+        "the lanes span the column"
     );
     rt.frame(1.0);
 }

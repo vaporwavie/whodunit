@@ -37,6 +37,7 @@ use crate::ui::stage::{self, Stage};
 mod board;
 #[cfg(test)]
 mod tests;
+mod viewer;
 
 pub const WORDMARK_FONT: &[u8] = include_bytes!("../../assets/fonts/Fraunces.ttf");
 const WORDMARK: TextStyle = TextStyle::new(20.0, 440.0)
@@ -449,7 +450,7 @@ pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.viewing.is_some() {
         // Esc closes the image, and only the image: it never also stops the agent.
         if ev.key == Key::Escape {
-            close_viewer(s);
+            viewer::close(s);
             return true;
         }
         return false;
@@ -1355,7 +1356,7 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
     let mut overlays = Vec::new();
     let side = sidebar(s, &core, k, &mut overlays);
     folder_picker::build(s, k, &mut overlays);
-    viewer(s, k, &mut overlays);
+    viewer::build(s, k, &mut overlays);
     let mut window =
         SplitView::new(main).sidebar(&s.sidebar, |s: &mut Window| &mut s.sidebar, side);
     if s.sidebar.width() - cx.titlebar_inset() >= WORDMARK_ROOM {
@@ -1386,123 +1387,6 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
             folder_picker::release_cmd(s, tx);
         }
     })
-}
-
-fn close_viewer(s: &mut Window) {
-    s.viewing = None;
-    s.composer.focused = true;
-}
-
-/// An image opened from its tile: as large as the window allows, never past its own size, with
-/// its format and size and a way to open it in the system's viewer to zoom. Esc, a click on
-/// it or a click beside it closes it.
-fn viewer(s: &Window, k: &Kit, layer: &mut Vec<El>) {
-    let Some(shot) = &s.viewing else {
-        return;
-    };
-    let c = &k.c;
-    let image = s.image(shot).filter(|image| image.error().is_none());
-    let size = shot.dimensions();
-    let picture = match &image {
-        Some(image) => {
-            let mut picture = el()
-                .key("viewer-image")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .pixels_fit(image.pixels(), rune::SurfaceFit::Fit)
-                .label(format!("{} image", shot.kind()))
-                .on_press(close_viewer);
-            // Never blown up past one image pixel per point.
-            if let Some((w, h)) = size {
-                picture = picture.max_w(w as f32).max_h(h as f32);
-            }
-            picture
-        }
-        None => col().key("viewer-image").padding(24.0).child(
-            text(format!("This {} can’t be shown here.", shot.kind()))
-                .font(k.ty.ui)
-                .color(c.text_muted),
-        ),
-    };
-    let about = match size {
-        Some((w, h)) => format!("{} · {w} × {h}", shot.kind()),
-        None => shot.kind().to_owned(),
-    };
-    let open_label = if cfg!(target_os = "macos") {
-        "Open in Preview"
-    } else {
-        "Open"
-    };
-    let bar = row()
-        .key("viewer-bar")
-        .gap(12.0)
-        .center_y()
-        .pl(12.0)
-        .pr(4.0)
-        .py(4.0)
-        .radius(k.radius.lg)
-        .fill(c.surface_raised)
-        .border(1.0, c.border_weak)
-        .child(
-            text(about)
-                .font(k.ty.small.features("'tnum' 1"))
-                .color(c.text_muted),
-        )
-        .child(
-            Button::new(open_label)
-                .variant(ButtonVariant::Ghost)
-                .control_size(ControlSize::Small)
-                .on_press(|s: &mut Window| {
-                    let Some(shot) = s.viewing.clone() else {
-                        return;
-                    };
-                    if let Err(error) = shot.open_externally() {
-                        lock(&s.core).toast(error, "error");
-                    }
-                })
-                .build(k),
-        )
-        .child(
-            Button::new("Close")
-                .variant(ButtonVariant::Ghost)
-                .control_size(ControlSize::Small)
-                .shortcut("esc")
-                .show_shortcut()
-                .on_press(close_viewer)
-                .build(k),
-        );
-    let panel = col()
-        .key("viewer")
-        .role("dialog")
-        .label("Image")
-        .w_full()
-        .h_full()
-        .gap(12.0)
-        .items_center()
-        .justify_center()
-        .child(picture)
-        .child(bar)
-        .on_press(close_viewer)
-        .token_motion(k.motion.overlay)
-        .modal(true, close_viewer);
-    layer.push(
-        el().key("viewer-scrim")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .fill(c.scrim)
-            .token_motion(k.motion.overlay)
-            .a11y_hidden(),
-    );
-    layer.push(
-        el().key("viewer-layer")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .padding(40.0)
-            .child(panel),
-    );
 }
 
 /// A fixed halfway frame for snapshots of the sealing sweep.

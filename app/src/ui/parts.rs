@@ -30,6 +30,8 @@ pub trait HasCore: 'static {
     fn mark_code_copied(&mut self, id: String);
     fn preview_sources(&self) -> &HashSet<String>;
     fn toggle_preview_source(&mut self, id: String);
+    fn fanout_answer(&self, key: &str) -> Option<usize>;
+    fn show_fanout_answer(&mut self, key: String, index: usize);
     /// A prompt image, decoding or decoded; `None` where nothing decodes (headless tests).
     fn image(&self, _shot: &Shot) -> Option<rune::Image> {
         None
@@ -799,18 +801,13 @@ fn assistant_view<S: HasCore>(
 
 fn fanout_card<S: HasCore>(
     s: &S,
-    core: &Core,
     answer: &FanAnswer,
-    picked: &Option<String>,
+    picked: Option<&str>,
     key: &str,
     k: &Kit,
 ) -> El {
     let c = &k.c;
-    let choosing = core.dialog.as_ref().and_then(|d| match &d.kind {
-        DialogKind::Select(options) => options.iter().position(|o| o == &answer.label),
-        _ => None,
-    });
-    let won = picked.as_deref() == Some(answer.label.as_str());
+    let won = picked == Some(answer.label.as_str());
     let mut head = row().w_full().gap(8.0).center_y().child(
         text(answer.label.clone())
             .font(k.ty.body_medium)
@@ -821,18 +818,6 @@ fn fanout_card<S: HasCore>(
     }
     if !answer.ok {
         head = head.child(chip("failed", k));
-    }
-    head = head.child(spacer());
-    if let Some(index) = choosing {
-        head = head.child(
-            Button::new(format!("Pick {}", answer.label))
-                .variant(ButtonVariant::Neutral)
-                .control_size(ControlSize::Small)
-                .shortcut(format!("{}", index + 1))
-                .show_shortcut()
-                .on_press(move |s: &mut S| with_core(s, |core| core.pick(index)))
-                .build(k),
-        );
     }
     let body: El = match (&answer.error, answer.text.is_empty()) {
         (Some(error), true) => text(error.clone())
@@ -849,7 +834,7 @@ fn fanout_card<S: HasCore>(
     };
     col()
         .key(format!("fan-{}", answer.label))
-        .grow(1.0)
+        .w_full()
         .min_w(0.0)
         .gap(10.0)
         .padding(14.0)
@@ -870,7 +855,6 @@ fn fanout_card<S: HasCore>(
 /// `prompt` is the request's bubble, once the transcript has it.
 fn fanout_view<S: HasCore>(
     s: &S,
-    core: &Core,
     prompt: Option<El>,
     answers: &[FanAnswer],
     picked: &Option<String>,
@@ -889,10 +873,38 @@ fn fanout_view<S: HasCore>(
             .to_owned(),
     };
     column = column.child(text(note).font(k.ty.small).color(k.c.text_muted));
-    let cards = answers
-        .iter()
-        .map(|a| fanout_card(s, core, a, picked, key, k));
-    column.child(row().w_full().gap(12.0).items_start().children(cards))
+    let index = s
+        .fanout_answer(key)
+        .or_else(|| {
+            answers
+                .iter()
+                .position(|a| Some(&a.label) == picked.as_ref())
+        })
+        .unwrap_or(0);
+    let mut tabs = row().w_full().gap(8.0).flex_wrap();
+    for (i, answer) in answers.iter().enumerate() {
+        let key = key.to_owned();
+        tabs = tabs.child(
+            Button::new(answer.label.clone())
+                .variant(if i == index {
+                    ButtonVariant::Neutral
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .control_size(ControlSize::Small)
+                .on_press_tx(move |s: &mut S, tx| {
+                    s.show_fanout_answer(key.clone(), i);
+                    tx.settle();
+                })
+                .build(k)
+                .key(format!("view-{}", answer.label)),
+        );
+    }
+    column = column.child(tabs);
+    if let Some(answer) = answers.get(index) {
+        column = column.child(fanout_card(s, answer, picked.as_deref(), key, k));
+    }
+    column
 }
 
 fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) -> El {
@@ -939,7 +951,7 @@ fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) ->
             picked,
         } => {
             let bubble = prompt.as_ref().map(|p| user_bubble(s, p, shots, k));
-            fanout_view::<S>(s, core, bubble, answers, picked, key, k)
+            fanout_view::<S>(s, bubble, answers, picked, key, k)
         }
         Item::Notice(note) => row()
             .w_full()
@@ -1009,17 +1021,55 @@ pub fn dialog<S: HasCore>(
 ) -> Option<El> {
     let dialog = core.dialog.as_ref()?;
     let c = &k.c;
-    if let DialogKind::Select(options) = &dialog.kind
-        && picks_on_cards(core, options)
-    {
-        let last = options.len().min(9);
+    if let Some(FanoutChoice { answers, index, .. }) = fanout_choice(core) {
+        let mut tabs = row().gap(8.0).flex_wrap();
+        for (i, answer) in answers.iter().enumerate() {
+            let mut button = Button::new(answer.label.clone())
+                .variant(if i == index {
+                    ButtonVariant::Neutral
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .on_press_tx(move |s: &mut S, tx| {
+                    with_core(s, |core| core.choose(i));
+                    tx.settle();
+                });
+            if i < 9 {
+                button = button.shortcut(format!("{}", i + 1)).show_shortcut();
+            }
+            tabs = tabs.child(button.build(k).key(format!("view-{}", answer.label)));
+        }
         return Some(
-            text(format!(
-                "Press 1–{last} or a card’s Pick button · esc to cancel"
-            ))
-            .key("dialog")
-            .font(k.ty.small)
-            .color(c.text_muted),
+            col()
+                .key("dialog")
+                .w_full()
+                .gap(8.0)
+                .child(
+                    row()
+                        .w_full()
+                        .gap(12.0)
+                        .center_y()
+                        .child(tabs)
+                        .child(spacer())
+                        .child(
+                            Button::new(format!("Pick {}", answers[index].label))
+                                .variant(ButtonVariant::Contrast)
+                                .shortcut("⏎")
+                                .show_shortcut()
+                                .on_press_tx(move |s: &mut S, tx| {
+                                    with_core(s, |core| core.pick(index));
+                                    tx.settle();
+                                })
+                                .build(k)
+                                .key("pick-answer"),
+                        ),
+                )
+                .child(
+                    text("Letter or number to view · ←/→ to browse · ⏎ to pick · esc to cancel")
+                        .font(k.ty.small)
+                        .color(c.text_muted)
+                        .wrap(),
+                ),
         );
     }
     let mut card = panel(k, false).key("dialog").gap(12.0).padding(16.0);
@@ -1200,19 +1250,64 @@ pub fn dialog<S: HasCore>(
     Some(card)
 }
 
-/// The open select picks among the cards of the fan-out still waiting for a pick.
-fn picks_on_cards(core: &Core, options: &[String]) -> bool {
-    core.t.items.iter().rev().find_map(|item| match item {
-        Item::Fanout {
-            answers,
-            picked: None,
-            ..
-        } => Some(
-            answers.len() == options.len()
-                && answers.iter().zip(options).all(|(a, o)| &a.label == o),
-        ),
-        _ => None,
-    }) == Some(true)
+pub struct FanoutChoice<'a> {
+    pub prompt: Option<&'a str>,
+    pub shots: &'a [Shot],
+    pub answers: &'a [FanAnswer],
+    pub index: usize,
+    pub item_index: usize,
+    pub generation: u64,
+}
+
+/// Match the pending select to its anonymous answers, not to unrelated dialogs.
+pub fn fanout_choice(core: &Core) -> Option<FanoutChoice<'_>> {
+    let dialog = core.dialog.as_ref()?;
+    let DialogKind::Select(options) = &dialog.kind else {
+        return None;
+    };
+    let (item_index, item) = core
+        .t
+        .items
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, item)| matches!(item, Item::Fanout { picked: None, .. }))?;
+    let Item::Fanout {
+        prompt,
+        shots,
+        answers,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    if answers.is_empty()
+        || answers.len() != options.len()
+        || !answers.iter().zip(options).all(|(a, o)| &a.label == o)
+    {
+        return None;
+    }
+    Some(FanoutChoice {
+        prompt: prompt.as_deref(),
+        shots,
+        answers,
+        item_index,
+        index: dialog.highlight.unwrap_or(0).min(answers.len() - 1),
+        generation: dialog.generation,
+    })
+}
+
+/// The picker has its own scroll area; its navigation stays below the answer.
+pub fn fanout_reading<S: HasCore>(s: &S, choice: &FanoutChoice<'_>, k: &Kit) -> El {
+    let mut column = col().w_full().gap(16.0).selection_group(true);
+    if let Some(prompt) = choice.prompt {
+        column = column.child(user_bubble(s, prompt, choice.shots, k));
+    }
+    column
+        .child(text("Read each answer, then pick the best. Identities stay hidden until you end the run.")
+            .font(k.ty.small).color(k.c.text_muted).wrap())
+        .child(fanout_card(s, &choice.answers[choice.index], None,
+            &format!("item-{}", choice.item_index), k))
 }
 
 pub fn toasts(core: &Core, k: &Kit) -> Option<El> {

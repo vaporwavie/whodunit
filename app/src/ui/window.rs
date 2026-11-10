@@ -104,6 +104,7 @@ pub struct Window {
     diffs: HashMap<String, DiffState>,
     copied_code: HashMap<String, Instant>,
     preview_sources: HashSet<String>,
+    fanout_answers: HashMap<String, usize>,
     /// The working timer's second as last drawn.
     ticked: Option<u64>,
     /// Each sidebar row's last-updated label as last drawn.
@@ -152,6 +153,14 @@ impl HasCore for Window {
         if !self.preview_sources.remove(&id) {
             self.preview_sources.insert(id);
         }
+    }
+
+    fn fanout_answer(&self, key: &str) -> Option<usize> {
+        self.fanout_answers.get(key).copied()
+    }
+
+    fn show_fanout_answer(&mut self, key: String, index: usize) {
+        self.fanout_answers.insert(key, index);
     }
 
     fn image(&self, shot: &Shot) -> Option<rune::Image> {
@@ -204,6 +213,7 @@ impl Window {
             diffs: HashMap::new(),
             copied_code: HashMap::new(),
             preview_sources: HashSet::new(),
+            fanout_answers: HashMap::new(),
             ticked: None,
             ages: Vec::new(),
             window_focused: false,
@@ -296,6 +306,15 @@ impl Window {
 }
 
 /// Keys a dialog takes before the composer types them.
+fn dialog_keys_tx(core: &mut Core, ev: &KeyEvent, empty_field: bool, tx: &mut Tx) -> bool {
+    let fanout = parts::fanout_choice(core).is_some();
+    let handled = dialog_keys(core, ev, empty_field);
+    if fanout && handled {
+        tx.settle();
+    }
+    handled
+}
+
 pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
     if ev.mods.cmd {
         return false;
@@ -305,6 +324,36 @@ pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
     };
     let select = matches!(dialog.kind, DialogKind::Select(_));
     let confirm = matches!(dialog.kind, DialogKind::Confirm(_));
+    if let Some(parts::FanoutChoice { answers, index, .. }) = parts::fanout_choice(core) {
+        let count = answers.len();
+        let next = match &ev.key {
+            Key::Left | Key::Up => (index + count - 1) % count,
+            Key::Right | Key::Down => (index + 1) % count,
+            Key::Enter => {
+                core.pick(index);
+                return true;
+            }
+            Key::Text(t) if empty_field => {
+                let by_label = answers.iter().position(|a| a.label.eq_ignore_ascii_case(t));
+                let by_number = t
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=9).contains(n) && *n <= count)
+                    .map(|n| n - 1);
+                let Some(next) = by_label.or(by_number) else {
+                    return false;
+                };
+                next
+            }
+            Key::Escape => {
+                core.answer_dialog(None);
+                return true;
+            }
+            _ => return false,
+        };
+        core.choose(next);
+        return true;
+    }
     match &ev.key {
         Key::Escape => core.answer_dialog(None),
         Key::Up if select => core.move_highlight(-1),
@@ -363,7 +412,7 @@ pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return folder_picker::on_key(s, ev, tx);
     }
-    if dialog_keys(&mut lock(&s.core), ev, true) {
+    if dialog_keys_tx(&mut lock(&s.core), ev, true, tx) {
         return true;
     }
     if shell::is_sidebar_toggle(ev) {
@@ -457,12 +506,18 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
         s.copied_code.clear();
         s.preview_sources.clear();
         s.handoff = stage::Handoff::default();
+        s.fanout_answers.clear();
         s.seal.clear();
         s.develop.clear();
         tx.settle();
     } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
         s.seal.start(Instant::now());
         tx.settle();
+    }
+    if let Some(choice) = parts::fanout_choice(core) {
+        // Keep the answer on screen while pi records the pick and returns to the transcript.
+        s.fanout_answers
+            .insert(format!("item-{}", choice.item_index), choice.index);
     }
     s.seen.done = Some(done);
     if !switched

@@ -9,7 +9,7 @@ use crate::core::{Core, Leave, cmd};
 use crate::transcript::Shot;
 use crate::ui::{dither, parts, seal};
 
-/// Wide enough for a fan-out's cards side by side, so every chat reads at one width.
+/// One reading column for chat and anonymous fan-out answers.
 pub(super) const COLUMN: f32 = 820.0;
 
 /// Sits on the composer, inset to its text, so reading it leads straight into typing.
@@ -81,18 +81,40 @@ pub(super) fn blank(core: &Core) -> bool {
 pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El {
     let width = COLUMN;
     let empty = blank(core);
-    let body: El = if empty {
+    let choice = parts::fanout_choice(core);
+    let body: El = if let Some(choice) = &choice {
+        col().w_full().items_center().px(24.0).py(20.0).child(
+            col()
+                .w_full()
+                .max_w(width)
+                .child(parts::fanout_reading(s, choice, k)),
+        )
+    } else if empty {
         col()
     } else {
         parts::transcript::<Window>(core, k, width)
     };
+    // A fresh scroll area starts each contender at the top, even after a long answer.
+    let scroll_key = choice.as_ref().map_or_else(
+        || "transcript".to_owned(),
+        |choice| {
+            format!(
+                "fanout-reading-{}-{}-{}",
+                core.task_id(),
+                choice.generation,
+                choice.index
+            )
+        },
+    );
     let scroll = col()
-        .key("transcript")
+        .key(scroll_key)
         .w_full()
         .grow(1.0)
         .min_h(0.0)
         .child(body)
-        .scroll(ScrollSpec { stick_bottom: true });
+        .scroll(ScrollSpec {
+            stick_bottom: choice.is_none(),
+        });
     let mut bottom = col().w_full().max_w(width).gap(10.0);
     if empty {
         bottom = bottom.child(empty_intro(k));

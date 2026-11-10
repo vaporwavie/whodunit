@@ -216,8 +216,12 @@ fn fanout_previews_keep_independent_controls() {
     click(&mut rt, "preview-source", 0);
     assert!(has_text(&rt, "flowchart LR"));
     assert!(!has_text(&rt, "flowchart TD"));
-    click(&mut rt, "copy-code", 1);
+    click(&mut rt, "view-B", 0);
+    assert!(!has_text(&rt, "flowchart LR"));
+    click(&mut rt, "copy-code", 0);
     assert_eq!(board.content().unwrap().text(), "flowchart TD\nX --> Y");
+    click(&mut rt, "view-A", 0);
+    assert!(has_text(&rt, "flowchart LR"));
 }
 
 #[test]
@@ -237,7 +241,7 @@ fn reloading_a_chat_does_not_reuse_another_blocks_source_toggle() {
 }
 
 #[test]
-fn fanout_can_show_design_tokens_beside_a_diagram() {
+fn fanout_can_switch_between_design_tokens_and_a_diagram() {
     let (_, mut rt) = window(vec![Item::Fanout {
         prompt: None,
         shots: vec![],
@@ -253,9 +257,12 @@ fn fanout_can_show_design_tokens_beside_a_diagram() {
         picked: None,
     }]);
     assert!(has_key(&rt, "design-system-preview"));
-    click(&mut rt, "preview-source", 1);
-    assert!(has_key(&rt, "design-system-preview"));
+    click(&mut rt, "view-B", 0);
+    assert!(!has_key(&rt, "design-system-preview"));
+    click(&mut rt, "preview-source", 0);
     assert!(has_text(&rt, "flowchart LR"));
+    click(&mut rt, "view-A", 0);
+    assert!(has_key(&rt, "design-system-preview"));
     click(&mut rt, "preview-source", 0);
     assert!(!has_key(&rt, "design-system-preview"));
     assert!(has_text(&rt, TOKENS));

@@ -244,6 +244,8 @@ fn a_fanout_shows_every_answer_and_continues_on_the_pick() {
         picking && card
     });
     press(&shared, "Which answer", text_key("B"));
+    assert!(lock(&shared).dialog.is_some(), "browsing does not pick");
+    press(&shared, "Which answer", Key::Enter);
     wait_for(&shared, "the deal on the pick", 60, |core| {
         core.t.week.deal.is_some() && core.session_file.is_some()
     });

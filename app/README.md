@@ -134,9 +134,14 @@ End each run when you're finished with its task, not when you switch chats. ⌘�
 
 ## Fan-outs
 
-While the contenders work, each gets a slim lane where its answer will land: its data bus streams while it answers, locks in when it's done, and breaks into static if it fails. A fan-out shows each contender's answer as A, B, C. Press a letter (or 1, 2, 3) to pick the best, and the winner continues the session.
+While the contenders work, each gets a slim progress lane: its data bus streams while it answers, locks in when it's done, and breaks into static if it fails. Once the answers arrive, read one at a time in the full chat column. The A, B, C buttons stay below the answer, alongside **Pick A** (or whichever answer you're viewing).
 
-<img alt="A fan-out: three anonymous answers, picked by key" src="../docs/fanout-light.png">
+Click a letter, press A/B/C or 1/2/3, or use ←/→ to switch answers without choosing a winner. Each answer opens at the top. Press ⏎ or click **Pick** to choose the answer on screen; Esc cancels. The winner continues the session, but identities stay hidden until you end the run. In chat history, the picked answer shows first and the other answers remain browsable.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/fanout-dark.png">
+  <img alt="A fan-out: one full-width anonymous answer with answer tabs and a separate Pick button" src="../docs/fanout-light.png">
+</picture>
 
 ## Folder picker
 

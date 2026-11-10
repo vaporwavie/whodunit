@@ -7,7 +7,7 @@ use rune_kit::{
 };
 
 use super::folder_picker;
-use super::{Page, Window, catch_up, chat, dialog_keys, request_end, start_soon};
+use super::{Page, Window, catch_up, chat, dialog_keys_tx, request_end, start_soon};
 use crate::config;
 use crate::core::{APP_COMMANDS, Core, Leave, cmd, lock};
 use crate::transcript::{SHOT_EXTENSIONS, Shot};
@@ -106,7 +106,7 @@ pub(super) fn stop(s: &mut Window, tx: &mut Tx) {
 
 fn composer_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let empty = s.draft.composer.text.is_empty();
-    if dialog_keys(&mut lock(&s.core), ev, empty) {
+    if dialog_keys_tx(&mut lock(&s.core), ev, empty, tx) {
         return true;
     }
     match &ev.key {

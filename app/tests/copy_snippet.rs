@@ -146,9 +146,13 @@ fn fanout_snippets_copy_independently() {
     }]);
     let board = clipboard::memory();
     rt.use_clipboard(&board);
-    for (i, expected) in ["echo A", "echo B"].iter().enumerate() {
-        copy(&mut rt, i);
-        assert_eq!(board.content().unwrap().text(), *expected);
-        assert_eq!(copied_labels(&rt), i + 1);
+    for (label, expected) in [("A", "echo A"), ("B", "echo B"), ("A", "echo A")] {
+        let (x, y) = rt.find(&format!("view-{label}")).unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.016);
+        copy(&mut rt, 0);
+        assert_eq!(board.content().unwrap().text(), expected);
+        assert_eq!(copied_labels(&rt), 1);
     }
 }

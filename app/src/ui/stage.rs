@@ -190,13 +190,13 @@ const THINK: u8 = 5;
 const SEALED: u8 = 6;
 const RAIL: u8 = 7;
 
-/// Three lines of redacted text, written as the agent thinks.
-const THINK_H: f32 = 39.0;
-/// Two still lines: a thought the run hasn't revealed. Its size never follows the trace's.
-const SEALED_H: f32 = 24.0;
+/// Three bands of redacted text, written as the agent thinks.
+const THINK_H: f32 = 66.0;
+/// Two still bands: a thought the run hasn't revealed. Its size never follows the trace's.
+const SEALED_H: f32 = 42.0;
 pub const RAIL_W: f32 = 3.0;
 
-/// A thought being written: scrambled lines, a cursor, scrolling up as they fill.
+/// A thought being written: redacted bands, a cursor, scrolling up as they fill.
 pub fn thinking(motion: Motion, k: &Kit) -> El {
     slot(k, motion, THINK, 0, 0.0)
         .w_full()
@@ -488,23 +488,23 @@ fn bus(pt: vec2f, size: vec2f, cell: vec2u, t: f32, kind: u32) -> vec4f {
     return vec4f(color, lit);
 }
 
-// Redacted text: words of scrambled glyph cells, laid on lines LINE tall every PITCH_LINE.
-const LINE: f32 = 9.0;
-const PITCH_LINE: f32 = 15.0;
+// Broad redaction bands, with occasional breaks rather than letter-sized islands.
+const LINE: f32 = 18.0;
+const PITCH_LINE: f32 = 24.0;
 
-fn glyphs(x: f32, line: i32, cell: vec2u, scramble: f32) -> bool {
+fn redaction(x: f32, line: i32, cell: vec2u, scramble: f32) -> bool {
     let at = x + f32(line) * 97.0;
-    let word = floor(at / 22.0);
-    let id = pcg(u32(i32(word) + 100000) * 13u + u32(line + 100000) * 7u);
-    if (at - word * 22.0 > 8.0 + 11.0 * u01(id)) { return false; }
-    return u01(cell_hash(cell) ^ pcg(u32(scramble) + 11u)) < 0.84;
+    let segment = floor(at / 64.0);
+    let id = pcg(u32(i32(segment) + 100000) * 13u + u32(line + 100000) * 7u);
+    if (at - segment * 64.0 > 52.0 + 8.0 * u01(id)) { return false; }
+    return u01(cell_hash(cell) ^ pcg(u32(scramble) + 11u)) < 0.92;
 }
 
-// A line's length, as a share of the room: paragraphs end on a short one.
+// A line's length, as a share of the room: every third line ends a paragraph.
 fn line_len(line: i32, salt: u32) -> f32 {
     let id = pcg(u32(line + 100000) * 31u + salt);
-    if (pcg(id) % 4u == 0u) { return 0.25 + 0.3 * u01(id); }
-    return 0.7 + 0.3 * u01(id);
+    if (line % 3 == 2) { return 0.48 + 0.2 * u01(id); }
+    return 0.82 + 0.18 * u01(id);
 }
 
 fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
@@ -528,7 +528,7 @@ fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
     let behind = head - pt.x;
     let fade = mix(0.4, 1.0, smoothstep(0.0, PITCH_LINE, pt.y));
     if (m == n && behind < 3.5 && f < 0.92) { return vec4f(p.accent.rgb, fade); }
-    if (!glyphs(pt.x, line, cell, floor(t * 3.0))) { return vec4f(0.0); }
+    if (!redaction(pt.x, line, cell, floor(t * 3.0))) { return vec4f(0.0); }
     var glow = 0.0;
     if (m == n) { glow = 1.0 - smoothstep(0.0, 48.0, behind); }
     return vec4f(mix(p.base.rgb, p.accent.rgb, glow), (0.95 + 0.05 * glow) * fade);
@@ -539,8 +539,8 @@ fn sealed(pt: vec2f, size: vec2f, cell: vec2u) -> vec4f {
     if (pt.y - m * PITCH_LINE >= LINE) { return vec4f(0.0); }
     let line = i32(m);
     let salt = u32(p.origin.z) * 7919u;
-    let len = min(size.x, 260.0) * line_len(line + i32(salt % 997u), salt) * select(1.0, 0.6, line == 1);
-    if (pt.x > len || !glyphs(pt.x, line + i32(salt % 997u), cell, 0.0)) { return vec4f(0.0); }
+    let len = min(size.x, 420.0) * line_len(line + 1, salt);
+    if (pt.x > len || !redaction(pt.x, line + i32(salt % 997u), cell, 0.0)) { return vec4f(0.0); }
     return vec4f(p.base.rgb, 0.7);
 }
 

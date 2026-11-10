@@ -125,8 +125,8 @@ fn run_chats(root: &Path) {
     start_unstarted(&shared);
     let mut ui = Window::new(shared.clone());
     window::poll(&mut ui, 0.0, &mut Tx::default());
-    ui.composer.replace_text("unsent follow-up for A");
-    ui.attachments = vec![whodunit::fixtures::screenshot()];
+    ui.draft.composer.replace_text("unsent follow-up for A");
+    ui.draft.attachments = vec![whodunit::fixtures::screenshot()];
     wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
     let a = PathBuf::from(lock(&shared).session_file.clone().unwrap());
     let a_id = lock(&shared).task_id();
@@ -135,10 +135,10 @@ fn run_chats(root: &Path) {
     navigate(&shared, Leave::New);
     window::poll(&mut ui, 0.0, &mut Tx::default());
     assert!(
-        ui.composer.text.is_empty() && ui.attachments.is_empty(),
+        ui.draft.composer.text.is_empty() && ui.draft.attachments.is_empty(),
         "a new task starts with an empty composer"
     );
-    ui.composer.replace_text("unsent follow-up for B");
+    ui.draft.composer.replace_text("unsent follow-up for B");
     let b_id = lock(&shared).task_id();
     assert_ne!(a_id, b_id);
     lock(&shared).submit("task B", false);
@@ -160,8 +160,8 @@ fn run_chats(root: &Path) {
 
     navigate(&shared, Leave::Open(a.clone()));
     window::poll(&mut ui, 0.0, &mut Tx::default());
-    assert_eq!(ui.composer.text, "unsent follow-up for A");
-    assert_eq!(ui.attachments, [whodunit::fixtures::screenshot()]);
+    assert_eq!(ui.draft.composer.text, "unsent follow-up for A");
+    assert_eq!(ui.draft.attachments, [whodunit::fixtures::screenshot()]);
     assert_eq!(lock(&shared).task_id(), a_id, "reuse A's process");
     assert_eq!(answer(&lock(&shared)), "task A");
     assert!(lock(&shared).reveal().is_none());
@@ -178,7 +178,7 @@ fn run_chats(root: &Path) {
     // Score dialog remains attached to A while visiting B, including across folders.
     navigate(&shared, Leave::Open(b.clone()));
     window::poll(&mut ui, 0.0, &mut Tx::default());
-    assert_eq!(ui.composer.text, "unsent follow-up for B");
+    assert_eq!(ui.draft.composer.text, "unsent follow-up for B");
     assert!(lock(&shared).dialog.is_none());
     assert_ne!(lock(&shared).stats.cost, a_cost);
     let other = root.join("another-project");

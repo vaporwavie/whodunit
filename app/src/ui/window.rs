@@ -45,22 +45,33 @@ pub enum Page {
     Scoreboard,
 }
 
-/// What a chat's composer holds while another chat is selected.
+/// What the selected chat's composer and dialog field hold. Each chat keeps its own, set aside in
+/// `Window::drafts` while another chat is selected.
 #[derive(Default)]
-struct Draft {
-    composer: TextEdit,
-    dialog_edit: TextEdit,
-    attachments: Vec<Shot>,
-    editor_generation: u64,
-    dialog_generation: u64,
-}
-
-pub struct Window {
-    pub core: Shared,
+pub struct Draft {
     pub composer: TextEdit,
     /// Images pasted or dropped on the composer, sent with the next prompt.
     pub attachments: Vec<Shot>,
     pub dialog_edit: TextEdit,
+    /// The core's last prefilled composer text this draft took.
+    editor_generation: u64,
+    /// The last dialog this draft has seen, so an input dialog's field is set up once.
+    dialog_generation: u64,
+}
+
+/// What `catch_up` last saw of the core, to tell what changed since.
+#[derive(Default)]
+struct Seen {
+    version: u64,
+    task: u64,
+    loads: u64,
+    /// Whether the chat was sealed; None before the first look.
+    done: Option<bool>,
+}
+
+pub struct Window {
+    pub core: Shared,
+    pub draft: Draft,
     /// Decodes prompt images for their tiles; set up with the window's waker.
     images: Option<ImageCache>,
     /// A file drag the composer would take is over the chat.
@@ -87,15 +98,11 @@ pub struct Window {
     reduced_motion: AtomicBool,
     lanes: stage::LaneClock,
     seal: seal::Sweep,
-    seen_done: Option<bool>,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
-    seen: u64,
-    seen_task: u64,
-    seen_loads: u64,
+    seen: Seen,
+    /// The other chats' drafts, by task ID.
     drafts: HashMap<u64, Draft>,
-    editor_generation: u64,
-    dialog_generation: u64,
 }
 
 impl HasCore for Window {
@@ -143,9 +150,10 @@ impl Window {
         composer.focused = true;
         Window {
             core,
-            composer,
-            attachments: Vec::new(),
-            dialog_edit: TextEdit::new(""),
+            draft: Draft {
+                composer,
+                ..Draft::default()
+            },
             images: None,
             dropping: false,
             viewing: None,
@@ -163,14 +171,9 @@ impl Window {
             reduced_motion: AtomicBool::new(false),
             lanes: stage::LaneClock::default(),
             seal: seal::Sweep::default(),
-            seen_done: None,
             slash_pick: (String::new(), 0),
-            seen: 0,
-            seen_task: 0,
-            seen_loads: 0,
+            seen: Seen::default(),
             drafts: HashMap::new(),
-            editor_generation: 0,
-            dialog_generation: 0,
         }
     }
 
@@ -284,7 +287,7 @@ pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('n') {
         s.leave(Leave::New, tx);
-        s.composer.focused = true;
+        s.draft.composer.focused = true;
         return true;
     }
     if ev.key == Key::Enter && ev.mods.cmd && !ev.mods.shift {
@@ -326,10 +329,10 @@ fn focus_composer(s: &mut Window, tx: &mut Tx) {
     let core = lock(&s.core);
     if let Some(dialog) = &core.dialog {
         if matches!(dialog.kind, DialogKind::Input { .. }) {
-            s.dialog_edit.focused = true;
+            s.draft.dialog_edit.focused = true;
         }
     } else if core.t.week.done.is_none() {
-        s.composer.focused = true;
+        s.draft.composer.focused = true;
     }
 }
 
@@ -337,40 +340,32 @@ fn focus_composer(s: &mut Window, tx: &mut Tx) {
 /// prefilled text. Another chat, or this one reloaded from pi, lands whole in one frame: nothing
 /// grows, reveals or springs over from what was on screen. Returns whether any of it changed.
 fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
-    let mut changed = core.version != s.seen;
-    s.seen = core.version;
-    let switched = core.task_id() != s.seen_task;
+    let mut changed = core.version != s.seen.version;
+    s.seen.version = core.version;
+    let switched = core.task_id() != s.seen.task;
     if switched {
         let draft = s.drafts.remove(&core.task_id()).unwrap_or_default();
-        let previous = Draft {
-            composer: std::mem::replace(&mut s.composer, draft.composer),
-            dialog_edit: std::mem::replace(&mut s.dialog_edit, draft.dialog_edit),
-            attachments: std::mem::replace(&mut s.attachments, draft.attachments),
-            editor_generation: s.editor_generation,
-            dialog_generation: s.dialog_generation,
-        };
-        s.drafts.insert(s.seen_task, previous);
-        s.seen_task = core.task_id();
+        let previous = std::mem::replace(&mut s.draft, draft);
+        s.drafts.insert(s.seen.task, previous);
+        s.seen.task = core.task_id();
         s.viewing = None;
-        s.composer.focused = true;
-        s.editor_generation = draft.editor_generation;
-        s.dialog_generation = draft.dialog_generation;
+        s.draft.composer.focused = true;
         s.diffs.clear();
         tx.scroll_to_bottom_instant("transcript");
         changed = true;
     }
-    let reloaded = core.loads != s.seen_loads;
-    s.seen_loads = core.loads;
+    let reloaded = core.loads != s.seen.loads;
+    s.seen.loads = core.loads;
     let done = core.t.week.done.is_some();
     if switched || reloaded {
         s.copied_code.clear();
         s.seal.clear();
         tx.settle();
-    } else if done && s.seen_done == Some(false) && s.page == Page::Chat {
+    } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
         s.seal.start(Instant::now());
         tx.settle();
     }
-    s.seen_done = Some(done);
+    s.seen.done = Some(done);
     if changed {
         let built = parts::tool_diffs(core, |id| s.diffs.contains_key(id));
         s.diffs.extend(
@@ -382,21 +377,21 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     if let Some((generation, text)) = core
         .editor_text
         .clone()
-        .filter(|(g, _)| *g != s.editor_generation)
+        .filter(|(g, _)| *g != s.draft.editor_generation)
     {
-        s.editor_generation = generation;
-        s.composer.replace_text(text);
+        s.draft.editor_generation = generation;
+        s.draft.composer.replace_text(text);
         changed = true;
     }
     if let Some(dialog) = core
         .dialog
         .as_ref()
-        .filter(|d| d.generation != s.dialog_generation)
+        .filter(|d| d.generation != s.draft.dialog_generation)
     {
-        s.dialog_generation = dialog.generation;
+        s.draft.dialog_generation = dialog.generation;
         if let DialogKind::Input { prefill, .. } = &dialog.kind {
-            s.dialog_edit = TextEdit::new(prefill.clone());
-            s.dialog_edit.focused = true;
+            s.draft.dialog_edit = TextEdit::new(prefill.clone());
+            s.draft.dialog_edit.focused = true;
         }
     }
     changed
@@ -552,9 +547,9 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
 pub fn scene_sealing(s: &mut Window) {
     crate::fixtures::scene_reveal(&s.core);
     let core = lock(&s.core);
-    s.seen_task = core.task_id();
-    s.seen_loads = core.loads;
-    s.seen_done = Some(true);
+    s.seen.task = core.task_id();
+    s.seen.loads = core.loads;
+    s.seen.done = Some(true);
     let now = Instant::now();
     s.seal.start(now);
     s.seal

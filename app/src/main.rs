@@ -93,12 +93,13 @@ fn main() {
             ("viewer", |s: &mut Window| {
                 fixtures::scene_attach(&s.core);
                 s.viewing = Some(fixtures::screenshot());
-                s.composer.focused = false;
+                s.draft.composer.focused = false;
             }),
             ("attach", |s: &mut Window| {
                 fixtures::scene_attach(&s.core);
-                s.attachments = vec![fixtures::screenshot(), fixtures::screenshot()];
-                s.composer
+                s.draft.attachments = vec![fixtures::screenshot(), fixtures::screenshot()];
+                s.draft
+                    .composer
                     .replace_text("And these two, from the settings page.");
             }),
             ("run", |s: &mut Window| fixtures::scene_run(&s.core)),
@@ -108,26 +109,26 @@ fn main() {
             ("busy", |s: &mut Window| fixtures::scene_busy(&s.core)),
             ("slash", |s: &mut Window| {
                 fixtures::scene_slash(&s.core);
-                s.composer.replace_text("/");
+                s.draft.composer.replace_text("/");
             }),
             ("slash-empty", |s: &mut Window| {
                 fixtures::scene_empty(&s.core);
-                s.composer.replace_text("/");
+                s.draft.composer.replace_text("/");
             }),
             ("shell", |s: &mut Window| {
                 fixtures::scene_chat(&s.core);
-                s.composer.replace_text("!cargo test");
+                s.draft.composer.replace_text("!cargo test");
             }),
             ("growing", |s: &mut Window| fixtures::scene_growing(&s.core)),
             ("picker", |s: &mut Window| {
                 fixtures::scene_chat(&s.core);
                 s.picker = fixtures::picker();
-                s.composer.focused = false;
+                s.draft.composer.focused = false;
             }),
             ("picker-cmd", |s: &mut Window| {
                 fixtures::scene_chat(&s.core);
                 s.picker = fixtures::picker().holding_cmd();
-                s.composer.focused = false;
+                s.draft.composer.focused = false;
             }),
             ("board", |s: &mut Window| {
                 fixtures::scene_chat(&s.core);

@@ -121,7 +121,7 @@ fn ending_lives_below_the_composer_and_command_return_never_sends_the_draft() {
     };
     let composer = rect("composer-frame");
     assert!(rect("end-run")[1] >= composer[1] + composer[3]);
-    rt.update(|s, _| s.composer.replace_text("An unsent draft"));
+    rt.update(|s, _| s.draft.composer.replace_text("An unsent draft"));
     rt.key(KeyEvent {
         key: Key::Enter,
         mods: Mods {
@@ -130,7 +130,7 @@ fn ending_lives_below_the_composer_and_command_return_never_sends_the_draft() {
         },
     });
     rt.frame(0.016);
-    assert_eq!(rt.state.composer.text, "An unsent draft");
+    assert_eq!(rt.state.draft.composer.text, "An unsent draft");
     let core = lock(&core);
     let sent = core.sent_before_start();
     assert_eq!(sent.len(), 1);
@@ -144,7 +144,7 @@ fn ending_lives_below_the_composer_and_command_return_never_sends_the_draft() {
 fn command_shift_return_still_queues_followups() {
     let core = core(crate::fixtures::scene_working);
     let mut rt = window(core.clone());
-    rt.update(|s, _| s.composer.replace_text("Next, run the tests"));
+    rt.update(|s, _| s.draft.composer.replace_text("Next, run the tests"));
     rt.key(KeyEvent {
         key: Key::Enter,
         mods: Mods {
@@ -583,7 +583,7 @@ fn a_new_task_is_the_next_frame() {
         })
     });
     new_task_is_the_next_frame(|rt| {
-        rt.update(|s, _| s.composer.replace_text("/new"));
+        rt.update(|s, _| s.draft.composer.replace_text("/new"));
         rt.frame(0.016);
         rt.key(Key::Enter.into());
     });
@@ -635,7 +635,7 @@ fn command_i_focuses_the_composer_from_any_page() {
     let core = core(crate::fixtures::scene_chat);
     let mut rt = window(core);
     rt.update(|s, tx| {
-        s.composer.focused = false;
+        s.draft.composer.focused = false;
         s.board = Some(crate::fixtures::board());
         s.show(Page::Scoreboard, tx);
     });
@@ -649,5 +649,5 @@ fn command_i_focuses_the_composer_from_any_page() {
     });
     rt.frame(0.016);
     assert!(shows(&rt, "/composer-frame"));
-    assert!(rt.state.composer.focused);
+    assert!(rt.state.draft.composer.focused);
 }

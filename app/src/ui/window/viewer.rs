@@ -9,7 +9,7 @@ use crate::ui::parts::HasCore;
 
 pub(super) fn close(s: &mut Window) {
     s.viewing = None;
-    s.composer.focused = true;
+    s.draft.composer.focused = true;
 }
 
 /// An image opened from its tile: as large as the window allows, never past its own size, with

@@ -37,7 +37,7 @@ static STOP: Icon = Icon {
 impl Window {
     fn slash_index(&self) -> usize {
         let (input, index) = &self.slash_pick;
-        if *input != self.composer.text {
+        if *input != self.draft.composer.text {
             return 0;
         }
         *index
@@ -45,21 +45,21 @@ impl Window {
 }
 
 fn submit(s: &mut Window, tx: &mut Tx, follow_up: bool) {
-    let text = s.composer.text.clone();
+    let text = s.draft.composer.text.clone();
     if text.trim() == "/scoreboard" {
-        s.composer.clear();
+        s.draft.composer.clear();
         s.open_scoreboard(tx);
         return;
     }
     if lock(&s.core).dialog.is_some() {
         return;
     }
-    s.composer.clear();
+    s.draft.composer.clear();
     s.show(Page::Chat, tx);
     let shared = s.core.clone();
     let mut core = lock(&shared);
-    if core.submit_with(&text, follow_up, &s.attachments) {
-        s.attachments.clear();
+    if core.submit_with(&text, follow_up, &s.draft.attachments) {
+        s.draft.attachments.clear();
     }
     // `/new` leaves as the New task button does.
     catch_up(s, &core, tx);
@@ -68,7 +68,7 @@ fn submit(s: &mut Window, tx: &mut Tx, follow_up: bool) {
 }
 
 fn composer_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
-    let empty = s.composer.text.is_empty();
+    let empty = s.draft.composer.text.is_empty();
     if dialog_keys(&mut lock(&s.core), ev, empty) {
         return true;
     }
@@ -87,7 +87,7 @@ fn composer_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Enter if ev.mods.shift => false,
         Key::Up | Key::Down | Key::Tab | Key::Enter => slash_key(s, &ev.key, tx),
-        Key::Backspace if empty && !ev.mods.cmd => s.attachments.pop().is_some(),
+        Key::Backspace if empty && !ev.mods.cmd => s.draft.attachments.pop().is_some(),
         _ => false,
     }
 }
@@ -107,11 +107,11 @@ pub(super) fn attach(s: &mut Window, shots: impl IntoIterator<Item = Result<Shot
     }
     for shot in shots {
         match shot {
-            Ok(shot) => s.attachments.push(shot),
+            Ok(shot) => s.draft.attachments.push(shot),
             Err(error) => core.toast(error, "error"),
         }
     }
-    s.composer.focused = true;
+    s.draft.composer.focused = true;
 }
 
 /// ⌘V with an image, a screenshot or image files copied in Finder attaches them; anything
@@ -133,7 +133,7 @@ fn composer_paste(s: &mut Window, content: &ClipboardContent, _: &mut Tx) -> boo
 
 /// ↑/↓ move the slash list's highlight, Tab completes it, ⏎ runs it.
 fn slash_key(s: &mut Window, key: &Key, tx: &mut Tx) -> bool {
-    let matches = slash_matches(&s.composer.text, &lock(&s.core));
+    let matches = slash_matches(&s.draft.composer.text, &lock(&s.core));
     if matches.is_empty() {
         return false;
     }
@@ -141,9 +141,9 @@ fn slash_key(s: &mut Window, key: &Key, tx: &mut Tx) -> bool {
     let index = s.slash_index().min(count - 1);
     let (name, description) = &matches[index];
     match key {
-        Key::Up => s.slash_pick = (s.composer.text.clone(), (index + count - 1) % count),
-        Key::Down => s.slash_pick = (s.composer.text.clone(), (index + 1) % count),
-        Key::Tab => s.composer.replace_text(format!("/{name} ")),
+        Key::Up => s.slash_pick = (s.draft.composer.text.clone(), (index + count - 1) % count),
+        Key::Down => s.slash_pick = (s.draft.composer.text.clone(), (index + 1) % count),
+        Key::Tab => s.draft.composer.replace_text(format!("/{name} ")),
         _ => choose_slash(s, name, description, tx),
     }
     true
@@ -156,12 +156,12 @@ fn needs_argument(description: &str) -> bool {
 
 /// ⏎ or a click on a slash row: run the command, or type it out when it still needs an argument.
 fn choose_slash(s: &mut Window, name: &str, description: &str, tx: &mut Tx) {
-    s.composer.focused = true;
+    s.draft.composer.focused = true;
     if needs_argument(description) {
-        s.composer.replace_text(format!("/{name} "));
+        s.draft.composer.replace_text(format!("/{name} "));
         return;
     }
-    s.composer.replace_text(format!("/{name}"));
+    s.draft.composer.replace_text(format!("/{name}"));
     submit(s, tx, false);
 }
 
@@ -220,7 +220,7 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
                 .role("button")
                 .label(format!("/{name}"))
                 .on_pointer_move(move |s: &mut Window, _| {
-                    s.slash_pick = (s.composer.text.clone(), index);
+                    s.slash_pick = (s.draft.composer.text.clone(), index);
                 })
                 .on_press_tx(move |s: &mut Window, tx| choose_slash(s, &target, &about, tx)),
         );
@@ -256,7 +256,7 @@ fn slash_list(input: &str, highlighted: usize, core: &Core, k: &Kit) -> Option<E
 
 fn composer_footer(s: &Window, core: &Core, k: &Kit) -> El {
     let mut status = row().gap(8.0).center_y().grow(1.0).shrink().min_w(0.0);
-    if let Some(mode) = shell_mode(&s.composer.text) {
+    if let Some(mode) = shell_mode(&s.draft.composer.text) {
         status = status.child(parts::chip(mode, k));
     }
     if chat::blank(core) {
@@ -305,7 +305,7 @@ fn shell_mode(input: &str) -> Option<&'static str> {
 
 /// One slot that is Stop while the agent works on an empty field and Send otherwise, so swapping never moves the footer.
 fn send_button(s: &Window, core: &Core, k: &Kit) -> El {
-    let empty = s.composer.text.trim().is_empty() && s.attachments.is_empty();
+    let empty = s.draft.composer.text.trim().is_empty() && s.draft.attachments.is_empty();
     if core.streaming && empty {
         return IconButton::new(&STOP)
             .variant(IconButtonVariant::Submit)
@@ -378,17 +378,17 @@ const COMPOSER_SHOT: f32 = 56.0;
 
 /// The images the next prompt carries, each with a button that takes it off.
 fn attachment_strip(s: &Window, k: &Kit) -> Option<El> {
-    if s.attachments.is_empty() {
+    if s.draft.attachments.is_empty() {
         return None;
     }
-    let tiles = s.attachments.iter().enumerate().map(|(index, shot)| {
+    let tiles = s.draft.attachments.iter().enumerate().map(|(index, shot)| {
         let remove = IconButton::new(&REMOVE)
             .variant(IconButtonVariant::Neutral)
             .control_size(ControlSize::Small)
             .label("Remove image")
             .on_press(move |s: &mut Window| {
-                if index < s.attachments.len() {
-                    s.attachments.remove(index);
+                if index < s.draft.attachments.len() {
+                    s.draft.attachments.remove(index);
                 }
             })
             .build(k)
@@ -417,14 +417,14 @@ fn composer_field(s: &Window, placeholder: &str, k: &Kit) -> El {
         line_height: (13.0f32 * 1.35 * 2.0).round() / 2.0,
         ..k.ty.ui
     };
-    let field = rune::text_input(&s.composer, style)
+    let field = rune::text_input(&s.draft.composer, style)
         .key("input")
         .w_full()
         .color(c.text_base)
         .placeholder(placeholder, c.text_faint)
         .caret(c.text_base, k.selection())
         .label(placeholder)
-        .on_edit(|s: &mut Window| &mut s.composer)
+        .on_edit(|s: &mut Window| &mut s.draft.composer)
         .on_submit(|s: &mut Window, tx: &mut Tx| submit(s, tx, false))
         .on_input_key(composer_key)
         .on_input_paste(composer_paste);
@@ -442,7 +442,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &Kit) -> El {
         (Some(_), _) => "Reply…",
     };
     let field = composer_field(s, placeholder, k).key("composer");
-    let focused = s.composer.focused || s.dropping;
+    let focused = s.draft.composer.focused || s.dropping;
     let mut frame = col()
         .key("composer-frame")
         .w_full()
@@ -465,7 +465,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &Kit) -> El {
     if let Some(working) = parts::working(core, k) {
         column = column.child(working);
     }
-    if let Some(list) = slash_list(&s.composer.text, s.slash_index(), core, k) {
+    if let Some(list) = slash_list(&s.draft.composer.text, s.slash_index(), core, k) {
         // A zero-height shelf the list hangs above, so opening it never moves the intro or the transcript.
         let shelf = row()
             .w_full()

@@ -344,14 +344,14 @@ pub fn show(s: &mut Window) {
         FolderPicker::show(&core.config, &core.cwd, core.wakers())
     };
     s.picker = picker;
-    s.composer.focused = false;
+    s.draft.composer.focused = false;
 }
 
 pub fn close(s: &mut Window) {
     s.picker.open = false;
     s.picker.loading = None;
     s.picker.query.focused = false;
-    s.composer.focused = true;
+    s.draft.composer.focused = true;
 }
 
 /// The window lost focus, so a ⌘ held for ⌘Tab won't come back up here.

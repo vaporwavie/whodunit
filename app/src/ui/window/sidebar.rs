@@ -141,7 +141,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El
                 .height(32.0)
                 .on_select(|s: &mut Window, tx| {
                     s.leave(Leave::New, tx);
-                    s.composer.focused = true;
+                    s.draft.composer.focused = true;
                 })
                 .build(k)
                 .key("new"),

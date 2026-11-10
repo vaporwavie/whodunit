@@ -68,7 +68,7 @@ fn ended(k: &Kit) -> El {
                     .show_shortcut()
                     .on_press_tx(|s: &mut Window, tx| {
                         s.leave(Leave::New, tx);
-                        s.composer.focused = true;
+                        s.draft.composer.focused = true;
                     })
                     .build(k),
             ),
@@ -110,8 +110,8 @@ pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El 
     }
     // A dialog takes the composer's place, so keys have one owner.
     if let Some(dialog) =
-        parts::dialog::<Window>(core, k, Some(&s.dialog_edit), |s: &mut Window| {
-            &mut s.dialog_edit
+        parts::dialog::<Window>(core, k, Some(&s.draft.dialog_edit), |s: &mut Window| {
+            &mut s.draft.dialog_edit
         })
     {
         bottom = bottom.child(dialog);

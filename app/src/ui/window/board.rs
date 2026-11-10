@@ -28,7 +28,7 @@ fn scoreboard_empty(k: &Kit) -> El {
                 .show_shortcut()
                 .on_press_tx(|s: &mut Window, tx| {
                     s.show(Page::Chat, tx);
-                    s.composer.focused = true;
+                    s.draft.composer.focused = true;
                 })
                 .build(k),
             ),

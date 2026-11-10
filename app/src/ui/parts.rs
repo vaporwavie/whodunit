@@ -778,13 +778,15 @@ fn assistant_view<S: HasCore>(
     if streaming && latest.is_none() && !dealing {
         column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think0")));
     }
-    if let Some(error) = error {
-        let shown = if core.reveal().is_some() {
-            format!("Error: {error}")
-        } else {
-            "Provider error. The message can name the lab, so it shows after /done.".to_owned()
-        };
-        column = column.child(text(shown).font(k.ty.small).color(c.danger.fg).wrap());
+    // A provider error shows as a toast and turns the tide red; its message can name the lab,
+    // so it stays out of the transcript until the reveal.
+    if let Some(error) = error.as_ref().filter(|_| core.reveal().is_some()) {
+        column = column.child(
+            text(format!("Error: {error}"))
+                .font(k.ty.small)
+                .color(c.danger.fg)
+                .wrap(),
+        );
     }
     if let Some(progress) = s.develop(key) {
         column = column.child(develop::slot(progress, k));

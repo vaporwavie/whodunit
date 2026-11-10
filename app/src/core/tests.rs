@@ -514,3 +514,30 @@ fn a_last_updated_label_lasts_until_it_reads_differently() {
         assert_ne!(ago(at, now + lasts), label, "{secs}s");
     }
 }
+
+#[test]
+fn a_provider_error_is_a_toast_that_troubles_the_run_until_a_retry_recovers() {
+    let mut core = core();
+    core.apply(json!({"type": "agent_start"}));
+    core.apply(json!({"type": "message_start", "message": {"role": "assistant"}}));
+    core.apply(json!({"type": "message_end", "message": {
+        "role": "assistant", "content": [], "stopReason": "error",
+        "errorMessage": "529 overloaded from anthropic", "model": "claude"
+    }}));
+    let shown: Vec<_> = core.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(shown, ["Provider error. Details after /done."]);
+    assert!(
+        !shown.iter().any(|t| t.contains("anthropic")),
+        "the lab stays hidden"
+    );
+    assert!(core.troubled());
+
+    core.apply(json!({"type": "auto_retry_start", "attempt": 1, "errorMessage": "529"}));
+    assert!(core.troubled());
+    core.apply(json!({"type": "auto_retry_end", "success": true, "attempt": 2}));
+    assert!(
+        core.toasts.is_empty(),
+        "a recovered retry takes the error back"
+    );
+    assert!(!core.troubled());
+}

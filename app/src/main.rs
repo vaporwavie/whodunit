@@ -111,6 +111,7 @@ fn main() {
             ("working", |s: &mut Window| window::scene_tide(s, 1.0)),
             ("tide", |s: &mut Window| window::scene_tide(s, 0.7)),
             ("thinking", window::scene_thinking),
+            ("trouble", window::scene_trouble),
             ("fanning", |s: &mut Window| fixtures::scene_fanning(&s.core)),
             ("fanout-long", |s: &mut Window| {
                 fixtures::scene_fanout_long(&s.core)

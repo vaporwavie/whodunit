@@ -347,6 +347,15 @@ pub fn scene_thinking(shared: &Shared) {
     }
 }
 
+/// The chat retrying after a provider error: the error shows as a toast over the composer.
+pub fn scene_trouble(shared: &Shared) {
+    scene_working(shared);
+    let mut core = lock(shared);
+    core.statuses
+        .insert("retry".into(), "Retrying (1) after: 529 overloaded".into());
+    core.toast("Provider error. Details after /done.", "error");
+}
+
 fn tool(id: &str, name: &str, args: &str) -> Option<Block> {
     Some(Block::Tool {
         id: id.into(),

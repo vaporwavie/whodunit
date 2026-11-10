@@ -285,6 +285,8 @@ impl std::ops::DerefMut for Core {
 }
 
 const END_AFTER_TURN: &str = "End the run when the turn finishes. Esc stops it now.";
+/// Leads every provider error toast, so a retry that recovers can take it back.
+const PROVIDER_ERROR: &str = "Provider error";
 
 pub const APP_COMMANDS: [(&str, &str); 5] = [
     ("new", "Start another task; other chats keep working"),
@@ -347,6 +349,23 @@ impl Core {
             until: Instant::now() + Duration::from_secs(seconds),
         });
         self.touch();
+    }
+
+    /// A provider error, as a toast: its message can name the lab, so before the reveal it waits.
+    fn provider_error(&mut self, message: &str) {
+        let text = match self.reveal() {
+            Some(_) if !message.is_empty() => format!("{PROVIDER_ERROR}: {message}"),
+            _ => format!("{PROVIDER_ERROR}. Details after /done."),
+        };
+        self.toast(text, "error");
+    }
+
+    /// Whether something troubles the run: a provider error being retried or just shown, any
+    /// other error toast, or pi gone. The tide turns red for it.
+    pub fn troubled(&self) -> bool {
+        self.statuses.contains_key("retry")
+            || self.exited.is_some()
+            || self.toasts.iter().any(|t| t.level == "error")
     }
 
     /// Drops expired toasts; returns the time until the next one expires.
@@ -871,6 +890,9 @@ impl Core {
                     Some("assistant") => {
                         self.t.add_message(message);
                         self.refresh_stats();
+                        if str_of(message, "stopReason") == "error" {
+                            self.provider_error(&str_of(message, "errorMessage"));
+                        }
                     }
                     _ => self.t.add_message(message),
                 }
@@ -997,6 +1019,8 @@ impl Core {
             }
             "auto_retry_end" => {
                 self.statuses.remove("retry");
+                // The retry's own outcome replaces the error that started it.
+                self.toasts.retain(|t| !t.text.starts_with(PROVIDER_ERROR));
                 if !record
                     .get("success")
                     .and_then(Value::as_bool)

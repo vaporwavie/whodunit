@@ -39,18 +39,67 @@ pub const TIDE_H: f32 = 340.0;
 /// The tide comes in fast and goes out slow, as the shore's swash does.
 const TIDE_IN: f32 = 1.4;
 const TIDE_OUT: f32 = 2.2;
+/// How long the tide takes to change colour.
+const SHADE: f32 = 0.45;
+/// Steps of a shade in the payload: six bits each.
+const SHADE_STEPS: f32 = 63.0;
 
-/// The first payload float: dark, then motion, then whether it's the tide.
-fn flags(dark: bool, motion: Motion, tide: bool) -> f32 {
-    f32::from(u8::from(dark)) + 2.0 * f32::from(motion as u8) + 8.0 * f32::from(u8::from(tide))
+/// What the tide says about the run: ink while it works, haze while it thinks, red when a
+/// provider error or a failure troubles it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Mood {
+    #[default]
+    Working,
+    Thinking,
+    Trouble,
 }
 
-fn unflag(data: f32) -> (bool, Motion, bool) {
+impl Mood {
+    /// How far toward haze and toward red.
+    fn shade(self) -> Shade {
+        match self {
+            Mood::Working => Shade::default(),
+            Mood::Thinking => Shade {
+                think: 1.0,
+                trouble: 0.0,
+            },
+            Mood::Trouble => Shade {
+                think: 0.0,
+                trouble: 1.0,
+            },
+        }
+    }
+}
+
+/// The tide's colour between ink, haze (`think`) and red (`trouble`), each 0 to 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Shade {
+    pub think: f32,
+    pub trouble: f32,
+}
+
+/// The first payload float: dark, then motion, then whether it's the tide, then its shade.
+fn flags(dark: bool, motion: Motion, tide: bool, shade: Shade) -> f32 {
+    let step = |v: f32| (v.clamp(0.0, 1.0) * SHADE_STEPS).round() as u32;
+    let bits = u32::from(dark)
+        | (motion as u32) << 1
+        | u32::from(tide) << 3
+        | step(shade.think) << 4
+        | step(shade.trouble) << 10;
+    bits as f32
+}
+
+fn unflag(data: f32) -> (bool, Motion, bool, Shade) {
     let bits = data as u32;
+    let unstep = |v: u32| (v & 63) as f32 / SHADE_STEPS;
     (
         bits & 1 == 1,
         Motion::of(((bits >> 1) & 3) as f32),
         bits & 8 == 8,
+        Shade {
+            think: unstep(bits >> 4),
+            trouble: unstep(bits >> 10),
+        },
     )
 }
 
@@ -59,58 +108,83 @@ pub fn slot(dark: bool, motion: Motion) -> El {
     effect(MARK)
         .key("dither")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .effect_data([flags(dark, motion, false), 0.0, 0.0, 0.0])
+        .effect_data([flags(dark, motion, false, Shade::default()), 0.0, 0.0, 0.0])
         .transition(
             Transition::asymmetric(Transition::none(), Transition::opacity())
                 .springs(SpringPair::new(Spring::NONE, Spring::new(0.15, 0.0))),
         )
 }
 
-/// The shore's water along the bottom of a working chat. `level` is how far it has come in (see
-/// `Tide`). `dock` is the composer's column as `[left inset, top]` in points from the slot's
+/// The shore's water along the bottom of a working chat. `tide` says how far it has come in and
+/// its colour. `dock` is the composer's column as `[left inset, top]` in points from the slot's
 /// top-left, kept clear, with the slot's own edges; `None` before the first layout.
-pub fn tide(dark: bool, motion: Motion, level: f32, dock: Option<[f32; 2]>) -> El {
+pub fn tide(dark: bool, motion: Motion, tide: &Tide, dock: Option<[f32; 2]>) -> El {
     let [inset, top] = dock.unwrap_or([-1.0, -1.0]);
+    let shade = tide.shade();
+    let label = if shade.trouble > 0.5 {
+        "Trouble"
+    } else if shade.think > 0.5 {
+        "Thinking"
+    } else {
+        "Working"
+    };
     effect(MARK)
         .key("tide")
         .pin(Some(0.0), None, Some(0.0), Some(0.0))
         .h(TIDE_H)
-        .effect_data([flags(dark, motion, true), level, inset, top])
-        .label("Working")
+        .effect_data([flags(dark, motion, true, shade), tide.level(), inset, top])
+        .label(label)
         .transition(Transition::none())
 }
 
-/// How far the tide has come in, from 0 (out of sight below the chat) to 1. It moves toward
-/// whether the chat works: in while it does, back out when the turn ends.
+/// How far the tide has come in, from 0 (out of sight below the chat) to 1, and its colour. It
+/// moves toward whether the chat works: in while it does, back out when the turn ends. Its shade
+/// follows the mood while it's in, and holds while it drains, so a failed turn goes out red.
 #[derive(Default)]
 pub struct Tide {
     level: f32,
+    shade: Shade,
+    target: Shade,
     last: Option<f64>,
 }
 
 impl Tide {
-    /// Lands on `working` with no motion: another chat, or a chat reloaded.
-    pub fn snap(&mut self, working: bool) {
+    /// Lands on `working` in `mood` with no motion: another chat, or a chat reloaded.
+    pub fn snap(&mut self, working: bool, mood: Mood) {
         self.level = f32::from(u8::from(working));
+        self.shade = mood.shade();
+        self.target = self.shade;
         self.last = None;
     }
 
-    /// Holds at `level`, for snapshots.
-    pub fn hold(&mut self, level: f32) {
+    /// Holds at `level` in `mood`, for snapshots.
+    pub fn hold(&mut self, level: f32, mood: Mood) {
+        self.snap(false, mood);
         self.level = level.clamp(0.0, 1.0);
-        self.last = None;
     }
 
     /// `now` is the UI clock in seconds.
-    pub fn tick(&mut self, now: f64, working: bool, motion: Motion) {
+    pub fn tick(&mut self, now: f64, working: bool, mood: Mood, motion: Motion) {
         let elapsed = self.last.map_or(0.0, |last| (now - last).max(0.0) as f32);
         self.last = Some(now);
         match motion {
             // Held water would say a finished chat still works, so nothing moves unseen.
-            Motion::Still | Motion::Paused => self.snap(working),
+            Motion::Still | Motion::Paused => return self.snap(working, mood),
             Motion::Live if working => self.level = (self.level + elapsed / TIDE_IN).min(1.0),
             Motion::Live => self.level = (self.level - elapsed / TIDE_OUT).max(0.0),
         }
+        if working || self.level == 0.0 {
+            self.target = mood.shade();
+        }
+        if self.level == 0.0 {
+            self.shade = self.target;
+        }
+        let step = elapsed / SHADE;
+        let toward = |from: f32, to: f32| from + (to - from).clamp(-step, step);
+        self.shade = Shade {
+            think: toward(self.shade.think, self.target.think),
+            trouble: toward(self.shade.trouble, self.target.trouble),
+        };
     }
 
     /// Linear in time; the shader eases where the water is (see `out` there).
@@ -118,8 +192,13 @@ impl Tide {
         self.level
     }
 
+    pub fn shade(&self) -> Shade {
+        self.shade
+    }
+
+    /// Coming in, going out, or changing colour.
     pub fn moving(&self) -> bool {
-        self.level > 0.0 && self.level < 1.0
+        (self.level > 0.0 && self.level < 1.0) || (self.level > 0.0 && self.shade != self.target)
     }
 }
 
@@ -130,16 +209,22 @@ mod tests {
     #[test]
     fn the_tide_comes_in_faster_than_it_goes_and_lands_when_not_live() {
         let mut tide = Tide::default();
-        tide.tick(0.0, true, Motion::Live);
-        tide.tick(TIDE_IN as f64 / 2.0, true, Motion::Live);
+        let working = Mood::Working;
+        tide.tick(0.0, true, working, Motion::Live);
+        tide.tick(TIDE_IN as f64 / 2.0, true, working, Motion::Live);
         assert!((tide.level() - 0.5).abs() < 0.001);
-        tide.tick((TIDE_IN / 2.0 + TIDE_OUT / 4.0) as f64, false, Motion::Live);
+        tide.tick(
+            (TIDE_IN / 2.0 + TIDE_OUT / 4.0) as f64,
+            false,
+            working,
+            Motion::Live,
+        );
         assert!((tide.level() - 0.25).abs() < 0.001, "out is slower than in");
-        tide.tick(10.0, true, Motion::Paused);
+        tide.tick(10.0, true, working, Motion::Paused);
         assert_eq!(tide.level(), 1.0, "unfocused, it lands");
-        tide.tick(11.0, false, Motion::Still);
+        tide.tick(11.0, false, working, Motion::Still);
         assert_eq!(tide.level(), 0.0);
-        tide.tick(30.0, true, Motion::Live);
+        tide.tick(30.0, true, working, Motion::Live);
         assert_eq!(
             tide.level(),
             0.0,
@@ -148,12 +233,48 @@ mod tests {
     }
 
     #[test]
+    fn the_tide_changes_colour_while_in_and_drains_in_the_colour_it_had() {
+        let mut tide = Tide::default();
+        tide.tick(0.0, true, Mood::Working, Motion::Live);
+        tide.tick(TIDE_IN as f64, true, Mood::Thinking, Motion::Live);
+        assert_eq!(tide.shade().think, 1.0, "a long step lands on haze");
+        tide.tick(TIDE_IN as f64 + 0.1, true, Mood::Trouble, Motion::Live);
+        let shade = tide.shade();
+        assert!(shade.think < 1.0 && shade.trouble > 0.0 && shade.trouble < 1.0);
+        assert!(tide.moving(), "it keeps drawing while the colour turns");
+        tide.tick(TIDE_IN as f64 + 1.0, true, Mood::Trouble, Motion::Live);
+        assert_eq!(tide.shade(), Mood::Trouble.shade());
+        tide.tick(TIDE_IN as f64 + 1.5, false, Mood::Working, Motion::Live);
+        assert_eq!(tide.shade(), Mood::Trouble.shade(), "it drains red");
+        tide.tick(30.0, false, Mood::Working, Motion::Live);
+        assert_eq!(tide.level(), 0.0);
+        assert_eq!(
+            tide.shade(),
+            Mood::Working.shade(),
+            "out of sight, it resets"
+        );
+    }
+
+    #[test]
     fn flags_round_trip() {
+        let shades = [
+            Shade::default(),
+            Mood::Thinking.shade(),
+            Mood::Trouble.shade(),
+            Shade {
+                think: 20.0 / SHADE_STEPS,
+                trouble: 41.0 / SHADE_STEPS,
+            },
+        ];
         for dark in [false, true] {
             for motion in Motion::ALL {
                 for tide in [false, true] {
-                    let (d, m, t) = unflag(flags(dark, motion, tide));
-                    assert!(d == dark && m == motion && t == tide);
+                    for shade in shades {
+                        let (d, m, t, s) = unflag(flags(dark, motion, tide, shade));
+                        assert!(d == dark && m == motion && t == tide);
+                        assert!((s.think - shade.think).abs() < 1e-6);
+                        assert!((s.trouble - shade.trouble).abs() < 1e-6);
+                    }
                 }
             }
         }
@@ -189,31 +310,109 @@ const DARK: Palette = Palette {
 };
 
 /// The tide is ink rather than water: one near-black (near-white in dark mode), its depth carried
-/// by the dither alone, a shade softer at the crest.
+/// by the dither alone, darkest along the crest. Thinking turns it to haze, trouble to red.
+/// Across the band, negative is under the crest, inside the water.
 const TIDE_LIGHT: Palette = Palette {
     stops: [
-        (-200.0, 0x111111),
-        (-100.0, 0x111111),
-        (-35.0, 0x2b2b2b),
-        (0.0, 0x3a3a3a),
-        (28.0, 0x1c1c1c),
+        (-200.0, 0x3a3a3a),
+        (-60.0, 0x262626),
+        (-12.0, 0x111111),
+        (0.0, 0x0a0a0a),
+        (28.0, 0x4a4a4a),
     ],
-    foam: 0x6e6e6e,
+    foam: 0x5e5e5e,
     speck_dim: 1.0,
-    strength: 0.6,
+    strength: 0.95,
 };
 const TIDE_DARK: Palette = Palette {
     stops: [
-        (-200.0, 0xece9e3),
-        (-100.0, 0xece9e3),
-        (-35.0, 0xcfccc6),
-        (0.0, 0xbdbab4),
-        (28.0, 0xdedbd5),
+        (-200.0, 0xbdbab4),
+        (-60.0, 0xd6d3cd),
+        (-12.0, 0xf1eee8),
+        (0.0, 0xfaf8f4),
+        (28.0, 0xb3b0aa),
     ],
-    foam: 0x8d8a85,
+    foam: 0xc9c6c0,
     speck_dim: 0.8,
-    strength: 0.65,
+    strength: 1.0,
 };
+const HAZE_LIGHT: Palette = Palette {
+    stops: [
+        (-200.0, 0xa995f7),
+        (-60.0, 0x8e74f2),
+        (-12.0, 0x7552ea),
+        (0.0, 0x6a45e6),
+        (28.0, 0xb3a1f8),
+    ],
+    foam: 0x9d86f5,
+    speck_dim: 1.0,
+    strength: 0.95,
+};
+const HAZE_DARK: Palette = Palette {
+    stops: [
+        (-200.0, 0x7259d6),
+        (-60.0, 0x9177f0),
+        (-12.0, 0xb5a0ff),
+        (0.0, 0xc8b8ff),
+        (28.0, 0x8c76e8),
+    ],
+    foam: 0xa892fa,
+    speck_dim: 0.8,
+    strength: 1.0,
+};
+const RED_LIGHT: Palette = Palette {
+    stops: [
+        (-200.0, 0xf09093),
+        (-60.0, 0xeb6c70),
+        (-12.0, 0xe2464b),
+        (0.0, 0xd93a40),
+        (28.0, 0xf2a3a5),
+    ],
+    foam: 0xee7f82,
+    speck_dim: 1.0,
+    strength: 0.95,
+};
+const RED_DARK: Palette = Palette {
+    stops: [
+        (-200.0, 0xb8373c),
+        (-60.0, 0xdc474c),
+        (-12.0, 0xff666b),
+        (0.0, 0xff8085),
+        (28.0, 0xc9484d),
+    ],
+    foam: 0xf0595e,
+    speck_dim: 0.8,
+    strength: 1.0,
+};
+
+/// The tide's palette at `shade`: ink, toward haze, then toward red.
+fn tide_palette(dark: bool, shade: Shade) -> Palette {
+    let (ink, haze, red) = if dark {
+        (&TIDE_DARK, &HAZE_DARK, &RED_DARK)
+    } else {
+        (&TIDE_LIGHT, &HAZE_LIGHT, &RED_LIGHT)
+    };
+    mix(&mix(ink, haze, shade.think), red, shade.trouble)
+}
+
+fn mix(a: &Palette, b: &Palette, t: f32) -> Palette {
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
+    let hex = |x: u32, y: u32| {
+        let (from, to) = (rgb(x), rgb(y));
+        let channel = |i: usize| (lerp(from[i], to[i]) * 255.0).round() as u32;
+        channel(0) << 16 | channel(1) << 8 | channel(2)
+    };
+    let mut stops = a.stops;
+    for (stop, (at, colour)) in stops.iter_mut().zip(b.stops) {
+        *stop = (lerp(stop.0, at), hex(stop.1, colour));
+    }
+    Palette {
+        stops,
+        foam: hex(a.foam, b.foam),
+        speck_dim: lerp(a.speck_dim, b.speck_dim),
+        strength: lerp(a.strength, b.strength),
+    }
+}
 
 fn rgb(hex: u32) -> [f32; 3] {
     [(hex >> 16) & 0xff, (hex >> 8) & 0xff, hex & 0xff].map(|c| c as f32 / 255.0)
@@ -229,7 +428,8 @@ struct P {
     foam: vec4f,
     // colour, and where across the band it sits
     stops: array<vec4f, 5>,
-    // the tide's level, the composer column's left inset and top (negative before layout)
+    // the tide's level, the composer column's left inset and top (negative before layout), and
+    // how far it has turned to thinking
     tide: vec4f,
 }
 var<immediate> p: P;
@@ -310,26 +510,40 @@ fn to_linear(c: vec3f) -> vec3f {
     let surge = smoothstep(0.0, 0.16, phase) * (1.0 - smoothstep(0.16, 1.0, phase));
     var d: f32;
     if (tide) {
-        // The sea lies below the line, which rests just above the composer. Going out, the line
-        // sinks below the slot, foam and spray with it. Squared, it crosses the hidden part behind
-        // the composer quickly: it slows as it comes in, and gathers pace as it goes out.
-        let rest = dock - 18.0;
+        // The sea lies below the line, which rests clear above the composer, a little higher and
+        // rougher while the agent thinks. Going out, the line sinks below the slot, foam and spray
+        // with it. Squared, it crosses the hidden part behind the composer quickly: it slows as it
+        // comes in, and gathers pace as it goes out.
+        let think = p.tide.w;
+        let rest = dock - 40.0 - 14.0 * think;
         let away = 1.0 - p.tide.x;
         let out = away * away * (h - rest + 110.0);
-        let line = rest + out - 0.6 * ripple - 18.0 * surge;
+        let line = rest + out - (0.55 + 0.2 * think) * ripple - (14.0 + 6.0 * think) * surge;
         d = line - y;
     } else {
         let line = 36.0 + slope * x + ripple + 36.0 * surge;
         d = (y - line) / sqrt(1.0 + slope * slope);
     }
 
-    let above = smoothstep(select(-260.0, -170.0, tide), -10.0, d);
-    let below = 1.0 - smoothstep(6.0, 64.0, d);
-    var lit = above * above * below;
+    var lit: f32;
+    if (tide) {
+        // A solid crest a few dots deep, the water thinning under it toward the composer, and
+        // nothing above but the foam.
+        let crest = exp(-pow((d + 4.0) / 5.5, 2.0));
+        let body = smoothstep(-110.0, -8.0, d) * (1.0 - smoothstep(-3.0, 1.0, d));
+        lit = max(crest, 0.5 * body * body);
+    } else {
+        let above = smoothstep(-260.0, -10.0, d);
+        let below = 1.0 - smoothstep(6.0, 64.0, d);
+        lit = above * above * below;
+    }
     var color = ramp(d);
 
     let froth = noise(pt / 7.0 + vec2f(t * 1.6, -t * 0.7));
-    let foam = exp(-pow((d - 34.0) / 12.0, 2.0)) * surge * smoothstep(0.35, 0.75, froth);
+    // The tide's foam rides its crest; the shore's is flung up the sand.
+    let crown = select(34.0, 5.0, tide);
+    let spread = select(12.0, 6.0, tide);
+    let foam = exp(-pow((d - crown) / spread, 2.0)) * surge * smoothstep(0.35, 0.75, froth);
     lit = max(lit, foam);
     color = mix(color, p.foam.rgb, clamp(foam * 1.6, 0.0, 1.0));
 
@@ -342,7 +556,7 @@ fn to_linear(c: vec3f) -> vec3f {
         let half = vec2f(w * 0.5 - inset, (h - 18.0 - dock) * 0.5);
         let q = abs(pt - centre) - half;
         let gap = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0);
-        bottom = sides * edge * smoothstep(4.0, 60.0, gap);
+        bottom = sides * edge * smoothstep(4.0, 30.0, gap);
     }
     lit *= bottom * p.misc.w;
 
@@ -353,7 +567,7 @@ fn to_linear(c: vec3f) -> vec3f {
         let cycle = t * 0.8 + u01(id) * 9.0;
         var specks = 0.03 * (1.0 - smoothstep(220.0, 400.0, y)) * bottom;
         // The tide's spray flies just above the water, never off the slot's top edge.
-        if (tide) { specks = 0.025 * exp(-pow((d - 30.0) / 24.0, 2.0)) * smoothstep(0.0, 30.0, y) * bottom; }
+        if (tide) { specks = 0.012 * exp(-pow((d - 12.0) / 12.0, 2.0)) * smoothstep(0.0, 30.0, y) * bottom; }
         if (u01(id ^ pcg(u32(floor(cycle)))) >= specks) { discard; }
         let q = fract(cycle);
         alpha = smoothstep(0.0, 0.15, q) * (1.0 - smoothstep(0.6, 0.85, q));
@@ -428,12 +642,15 @@ pub fn pipeline_with(
 
 fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8> {
     let [flags, level, inset, top] = site.data;
-    let (dark, _, tide) = unflag(flags);
+    let (dark, _, tide, shade) = unflag(flags);
+    let blended;
     let palette = match (tide, dark) {
         (false, false) => &LIGHT,
         (false, true) => &DARK,
-        (true, false) => &TIDE_LIGHT,
-        (true, true) => &TIDE_DARK,
+        (true, _) => {
+            blended = tide_palette(dark, shade);
+            &blended
+        }
     };
     let [x, y, w, h] = site.instance.rect;
     let [ox, oy] = site.origin;
@@ -460,7 +677,7 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
         let [r, g, b] = rgb(hex);
         values.extend([r, g, b, at]);
     }
-    values.extend([level, inset, top, 0.0]);
+    values.extend([level, inset, top, shade.think]);
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 

@@ -193,7 +193,10 @@ impl Window {
         composer.focused = true;
         // A window opened on a working chat finds the tide already in.
         let mut tide = dither::Tide::default();
-        tide.snap(tide_rises(&lock(&core)));
+        {
+            let core = lock(&core);
+            tide.snap(tide_rises(&core), tide_mood(&core));
+        }
         Window {
             core,
             draft: Draft {
@@ -511,7 +514,7 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
         s.fanout_answers.clear();
         s.seal.clear();
         s.develop.clear();
-        s.tide.snap(tide_rises(core));
+        s.tide.snap(tide_rises(core), tide_mood(core));
         tx.settle();
     } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
         s.seal.start(Instant::now());
@@ -652,15 +655,17 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(left);
     }
     s.lanes.track(at_work.as_ref());
-    let tide = s.tide.level();
+    let tide = (s.tide.level(), s.tide.shade());
     s.tide.tick(
         t,
         s.page == Page::Chat && tide_rises(&core),
+        tide_mood(&core),
         s.shore_motion(),
     );
-    changed |= s.tide.level() != tide;
+    changed |= (s.tide.level(), s.tide.shade()) != tide;
+    // A troubled chat can hold its tide in while idle, and the water still moves.
     let live = s.page == Page::Chat
-        && (chat::blank(&core) || at_work.is_some() || s.tide.moving())
+        && (chat::blank(&core) || at_work.is_some() || s.tide.level() > 0.0)
         && s.shore_motion() == dither::Motion::Live;
     drop(core);
     if let Some(at) = s.board_rise_at {
@@ -681,11 +686,29 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     changed || live
 }
 
-/// Whether the chat's tide should be in: its agent works or thinks, outside a fan-out's pick.
+/// Whether the chat's tide should be in: its agent works or thinks, or trouble holds it in red,
+/// outside a fan-out's pick. A stopped pi doesn't hold it, or the water would run for good.
 fn tide_rises(core: &Core) -> bool {
     !chat::blank(core)
         && parts::fanout_choice(core).is_none()
-        && Stage::of(core).is_some_and(|stage| stage.tide())
+        && (Stage::of(core).is_some_and(|stage| stage.tide())
+            || (core.troubled() && core.exited.is_none() && core.t.week.done.is_none()))
+}
+
+/// The tide's colour: red while the run is in trouble, haze while the live message thinks.
+fn tide_mood(core: &Core) -> dither::Mood {
+    let thinking = matches!(
+        core.t.items.last(),
+        Some(Item::Assistant { blocks, streaming: true, .. })
+            if matches!(blocks.iter().rev().flatten().next(), Some(Block::Thinking(_)))
+    );
+    if core.troubled() {
+        dither::Mood::Trouble
+    } else if core.streaming && thinking {
+        dither::Mood::Thinking
+    } else {
+        dither::Mood::Working
+    }
 }
 
 fn toolbar(s: &Window, core: &Core, k: &Kit) -> Toolbar {
@@ -777,13 +800,19 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
 /// The working chat with its tide `level` of the way in (before easing), without a pi process.
 pub fn scene_tide(s: &mut Window, level: f32) {
     crate::fixtures::scene_working(&s.core);
-    s.tide.hold(level);
+    s.tide.hold(level, dither::Mood::Working);
 }
 
-/// The chat thinking, its tide in.
+/// The chat thinking, its tide in and hazed.
 pub fn scene_thinking(s: &mut Window) {
     crate::fixtures::scene_thinking(&s.core);
-    s.tide.hold(1.0);
+    s.tide.hold(1.0, dither::Mood::Thinking);
+}
+
+/// The chat retrying after a provider error, its tide in red.
+pub fn scene_trouble(s: &mut Window) {
+    crate::fixtures::scene_trouble(&s.core);
+    s.tide.hold(1.0, dither::Mood::Trouble);
 }
 
 /// A fixed halfway frame of the pass that develops an answer at the end of its turn.

@@ -188,7 +188,7 @@ const THINK_H: f32 = 66.0;
 /// Two still bands: a thought the run hasn't revealed. Its size never follows the trace's.
 const SEALED_H: f32 = 42.0;
 /// Room left under the tail for the tide's crest, so the answer's last lines stay clear.
-const TIDE_GAP: f32 = 66.0;
+const TIDE_GAP: f32 = 96.0;
 pub const RAIL_W: f32 = 3.0;
 
 /// A thought being written: redacted bands, a cursor, scrolling up as they fill.

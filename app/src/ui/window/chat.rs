@@ -185,7 +185,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El 
             .zip(s.dock_rect)
             .map(|([x, y, ..], [dx, dy, ..])| [dx - x, dy - y]);
         stage = stage.child(
-            dither::tide(dark, s.shore_motion(), s.tide.level(), dock)
+            dither::tide(dark, s.shore_motion(), &s.tide, dock)
                 .on_layout(|s: &mut Window, rect| s.tide_rect = Some(rect)),
         );
     }

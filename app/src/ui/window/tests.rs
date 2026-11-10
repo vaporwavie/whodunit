@@ -338,6 +338,112 @@ fn a_live_thought_writes_itself_in_place_of_the_scanner() {
 }
 
 #[test]
+fn the_scanner_hands_its_space_to_an_incoming_thought_without_restarting_on_tokens() {
+    let shared = core(crate::fixtures::scene_working);
+    let mut rt = window(shared.clone());
+    rt.state.window_focused = true;
+    rt.frame(0.016);
+    let scan = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("stage-scan"))
+        .unwrap()
+        .rect;
+    let last = {
+        let mut core = lock(&shared);
+        if let Some(Item::Assistant { streaming, .. }) = core.t.items.last_mut() {
+            *streaming = false;
+        }
+        core.t.items.push(Item::Assistant {
+            blocks: vec![],
+            streaming: true,
+            error: None,
+        });
+        core.version += 1;
+        core.t.items.len() - 1
+    };
+    rt.frame(0.016);
+    assert_eq!(rt.state.handoff.progress(), 0.0);
+    assert!(!shows(&rt, "/stage-scan"));
+    let key = format!("item-{last}-think0");
+    let thought = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(&key))
+        .unwrap();
+    for (a, b) in scan.into_iter().zip(thought.rect) {
+        assert!(
+            (a - b).abs() < 0.5,
+            "scanner {scan:?}, thought {:?}",
+            thought.rect
+        );
+    }
+    {
+        let mut core = lock(&shared);
+        if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
+            blocks.push(Some(crate::transcript::Block::Thinking("secret".into())));
+        }
+        core.version += 1;
+    }
+    rt.frame(0.14);
+    assert!((rt.state.handoff.progress() - 0.5).abs() < 0.001);
+    assert!(shows(&rt, &format!("/{key}")));
+    rt.frame(0.16);
+    assert_eq!(rt.state.handoff.progress(), 1.0);
+}
+
+#[test]
+fn thinking_after_text_in_the_same_message_keeps_the_scanners_anchor() {
+    let shared = core(crate::fixtures::scene_working);
+    let mut rt = window(shared.clone());
+    let rect = |rt: &Runtime<Window>, key: &str| {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap()
+            .rect
+    };
+    let scan = rect(&rt, "stage-scan");
+    let last = {
+        let mut core = lock(&shared);
+        if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
+            blocks.push(Some(crate::transcript::Block::Thinking("secret".into())));
+        }
+        core.version += 1;
+        core.t.items.len() - 1
+    };
+    rt.frame(0.016);
+    let thought = rect(&rt, &format!("item-{last}-think1"));
+    for (a, b) in scan.into_iter().zip(thought) {
+        assert!((a - b).abs() < 0.5, "scanner {scan:?}, thought {thought:?}");
+    }
+}
+
+#[test]
+fn reloading_or_leaving_a_chat_clears_a_thinking_handoff() {
+    let shared = core(crate::fixtures::scene_thinking);
+    let mut rt = window(shared.clone());
+    for leave in [false, true] {
+        rt.state
+            .handoff
+            .track(0.0, Some(&Stage::Working), dither::Motion::Live);
+        rt.state
+            .handoff
+            .track(0.0, Some(&Stage::Thinking), dither::Motion::Live);
+        assert_eq!(rt.state.handoff.progress(), 0.0);
+        if leave {
+            rt.update(|s, tx| s.show(Page::Scoreboard, tx));
+        } else {
+            let mut core = lock(&shared);
+            core.loads += 1;
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert_eq!(rt.state.handoff.progress(), 1.0);
+    }
+}
+
+#[test]
 fn a_sealed_thought_never_shows_its_text_or_its_length() {
     let height = |body: &str| {
         let core = core(crate::fixtures::scene_chat);

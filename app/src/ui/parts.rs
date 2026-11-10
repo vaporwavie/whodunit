@@ -35,6 +35,10 @@ pub trait HasCore: 'static {
     fn stage_motion(&self) -> Motion {
         Motion::Live
     }
+    /// How far the scanner has resolved into the live thought; one is settled.
+    fn thinking_merge(&self) -> f32 {
+        1.0
+    }
     /// Seconds since a fan-out lane last changed state.
     fn lane_age(&self, _label: &str) -> f32 {
         stage::SETTLED
@@ -519,7 +523,19 @@ fn assistant_view<S: HasCore>(
                         column = column.child(thinking_block(body, k, think_key));
                     }
                 } else if streaming && latest == Some(index) {
-                    column = column.child(stage::thinking(s.stage_motion(), k).key(think_key));
+                    let thought =
+                        stage::thinking(s.stage_motion(), s.thinking_merge(), k).key(think_key);
+                    let follows_content =
+                        blocks[..index].iter().flatten().any(|block| match block {
+                            Block::Text(body) | Block::Thinking(body) => !body.is_empty(),
+                            Block::Tool { .. } => true,
+                        });
+                    // Match the tail scanner's 18pt gap, rather than the column's 10pt gap.
+                    column = column.child(if follows_content {
+                        col().pt(8.0).child(thought)
+                    } else {
+                        thought
+                    });
                 } else if !body.is_empty() {
                     column = column.child(stage::sealed(index, k).key(think_key));
                 }
@@ -535,7 +551,9 @@ fn assistant_view<S: HasCore>(
     }
     let dealing = matches!(Stage::of(core), Some(Stage::Dealing { .. }));
     if streaming && latest.is_none() && !dealing {
-        column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think")));
+        column = column.child(
+            stage::thinking(s.stage_motion(), s.thinking_merge(), k).key(format!("{key}-think0")),
+        );
     }
     if let Some(error) = error {
         let shown = if core.reveal().is_some() {

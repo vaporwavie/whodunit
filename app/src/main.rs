@@ -87,6 +87,7 @@ fn main() {
             ("thinking", |s: &mut Window| {
                 fixtures::scene_thinking(&s.core)
             }),
+            ("thinking-merge", window::scene_thinking_merge),
             ("fanning", |s: &mut Window| fixtures::scene_fanning(&s.core)),
             ("fanout-long", |s: &mut Window| {
                 fixtures::scene_fanout_long(&s.core)

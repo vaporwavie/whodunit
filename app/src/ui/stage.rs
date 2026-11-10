@@ -22,6 +22,7 @@ pub const SETTLED: f32 = 60.0;
 const DEAL_H: f32 = 72.0;
 const SCAN_H: f32 = 15.0;
 const BUS_H: f32 = 6.0;
+const MERGE_SECONDS: f32 = 0.28;
 /// One pass of the deck (the shader's `DEAL_CYCLE`): split, riffle, deal a card off. A quick
 /// deal still plays it through, unless the answer starts first.
 pub const DEAL_HOLD: std::time::Duration = std::time::Duration::from_millis(2600);
@@ -146,6 +147,51 @@ impl Stage {
     }
 }
 
+/// A scanner already on screen unfolds into the next live thought. Opening a chat mid-thought
+/// starts settled; the elapsed time follows the UI clock, not the incoming tokens.
+pub struct Handoff {
+    working: bool,
+    progress: f32,
+    last: Option<f64>,
+    live: bool,
+}
+
+impl Default for Handoff {
+    fn default() -> Self {
+        Self {
+            working: false,
+            progress: 1.0,
+            last: None,
+            live: false,
+        }
+    }
+}
+
+impl Handoff {
+    pub fn track(&mut self, now: f64, stage: Option<&Stage>, motion: Motion) {
+        let live = motion == Motion::Live;
+        let elapsed = if live && self.live {
+            (now - self.last.unwrap_or(now)).max(0.0) as f32
+        } else {
+            0.0
+        };
+        if stage != Some(&Stage::Thinking) || motion == Motion::Still {
+            self.progress = 1.0;
+        } else if self.working {
+            self.progress = 0.0;
+        } else {
+            self.progress = (self.progress + elapsed / MERGE_SECONDS).min(1.0);
+        }
+        self.working = stage == Some(&Stage::Working);
+        self.last = Some(now);
+        self.live = live;
+    }
+
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+}
+
 /// When each lane last changed state, so a finished one settles from where it was.
 #[derive(Default)]
 pub struct LaneClock(HashMap<String, (LaneState, std::time::Instant)>);
@@ -197,10 +243,12 @@ const SEALED_H: f32 = 42.0;
 pub const RAIL_W: f32 = 3.0;
 
 /// A thought being written: redacted bands, a cursor, scrolling up as they fill.
-pub fn thinking(motion: Motion, k: &Kit) -> El {
-    slot(k, motion, THINK, 0, 0.0)
+pub fn thinking(motion: Motion, merge: f32, k: &Kit) -> El {
+    let merge = if motion == Motion::Still { 1.0 } else { merge };
+    slot(k, motion, THINK, 0, merge)
         .w_full()
         .h(THINK_H)
+        .transition(rune::Transition::none())
         .label("Thinking")
 }
 
@@ -242,7 +290,9 @@ pub fn view(stage: &Stage, motion: Motion, age: impl Fn(&str) -> f32, k: &Kit) -
         Stage::Working => slot(k, motion, SCAN, 0, 0.0)
             .key("stage-scan")
             .w_full()
-            .h(SCAN_H)
+            // The strip stays thin, but leaves room for the thought it becomes.
+            .h(THINK_H)
+            .transition(rune::Transition::none())
             .label("Working"),
         Stage::Thinking => col(),
         Stage::Fanout(fanout) => {
@@ -328,9 +378,9 @@ struct P {
     rect: vec4f,
     // scale, time, sRGB blending, kind
     misc: vec4f,
-    // pass origin x and y, seed, age
+    // pass origin x and y, seed, lane age / thinking handoff progress
     origin: vec4f,
-    // strength
+    // strength, scanner height
     extra: vec4f,
     base: vec4f,
     accent: vec4f,
@@ -433,6 +483,7 @@ fn deal(pt: vec2f, size: vec2f, t: f32) -> vec4f {
 // A scanner sweeps the strip; its trail breaks into dots behind it, over faint static and the
 // odd glitch.
 fn scan(pt: vec2f, size: vec2f, cell: vec2u, rows: u32, t: f32) -> vec4f {
+    if (pt.y >= size.y) { return vec4f(0.0); }
     let span = size.x + 200.0;
     let head = fract(t / 3.0) * span - 100.0;
     let behind = head - pt.x;
@@ -534,6 +585,18 @@ fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
     return vec4f(mix(p.base.rgb, p.accent.rgb, glow), (0.95 + 0.05 * glow) * fade);
 }
 
+// Keep the scanner's sweep and noise in phase while its strip opens into redacted lines.
+fn thinking_handoff(pt: vec2f, size: vec2f, cell: vec2u, rows: u32, t: f32) -> vec4f {
+    let merge = smoothstep(0.0, 1.0, p.origin.w);
+    let thought = think(pt, size, cell, t);
+    if (merge >= 1.0) { return thought; }
+    let height = mix(p.extra.y, size.y, merge);
+    let strip = scan(pt, vec2f(size.x, height), cell, rows, t);
+    // Blend densities before dithering, so dots resolve rather than a translucent layer fading in.
+    let ink = mix(vec4f(strip.rgb * strip.a, strip.a), vec4f(thought.rgb * thought.a, thought.a), merge);
+    return vec4f(ink.rgb / max(ink.a, 0.001), ink.a);
+}
+
 fn sealed(pt: vec2f, size: vec2f, cell: vec2u) -> vec4f {
     let m = floor(pt.y / PITCH_LINE);
     if (pt.y - m * PITCH_LINE >= LINE) { return vec4f(0.0); }
@@ -562,12 +625,12 @@ fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     let size = p.rect.zw / scale;
     // The pass's scissor is the slot's clip, not its rect.
     if (pt.x > size.x || pt.y > size.y) { discard; }
-    let rows = max(u32(p.rect.w / PITCH), 1u);
+    let rows = max(u32(p.extra.y * scale / PITCH), 1u);
     var ink = vec4f(0.0);
     switch kind {
         case 0u: { ink = deal(pt, size, select(t, p.origin.w, p.origin.w >= 0.0)); }
-        case 1u: { ink = scan(pt, size, cell, rows, t); }
-        case 5u: { ink = think(pt, size, cell, t); }
+        case 1u: { ink = scan(pt, vec2f(size.x, p.extra.y), cell, rows, t); }
+        case 5u: { ink = thinking_handoff(pt, size, cell, rows, t); }
         case 6u: { ink = sealed(pt, size, cell); }
         case 7u: { ink = rail(pt, cell); }
         default: { ink = bus(pt, size, cell, t, kind); }
@@ -575,7 +638,9 @@ fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     // Scanlines: every other row runs dimmer, except on the cards.
     var lit = ink.a * p.extra.x;
     if (kind != 0u && kind != 7u && (cell.y & 1u) == 1u) {
-        lit *= select(0.6, 0.85, kind == 5u || kind == 6u);
+        var dim = select(0.6, 0.85, kind == 6u);
+        if (kind == 5u) { dim = mix(0.6, 0.85, smoothstep(0.0, 1.0, p.origin.w)); }
+        lit *= dim;
     }
     if (lit <= bayer8(cell)) { discard; }
     var color = ink.rgb;
@@ -616,7 +681,7 @@ pub fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Ve
         seed,
         age,
         palette.strength,
-        0.0,
+        SCAN_H,
         0.0,
         0.0,
     ];
@@ -642,6 +707,60 @@ pub fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Ren
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_visible_working_stage_hands_off_to_thinking() {
+        let mut h = Handoff::default();
+        h.track(0.0, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), 1.0, "opening mid-thought is settled");
+        h.track(1.0, Some(&Stage::Working), Motion::Live);
+        h.track(2.0, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), 0.0);
+        h.track(2.14, Some(&Stage::Thinking), Motion::Live);
+        assert!((h.progress() - 0.5).abs() < 0.001);
+        h.track(2.3, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), 1.0);
+        h.track(3.0, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), 1.0, "more tokens don't restart it");
+
+        h.track(4.0, Some(&Stage::Working), Motion::Live);
+        h.track(5.0, None, Motion::Live);
+        h.track(6.0, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), 1.0, "idle breaks the handoff");
+    }
+
+    #[test]
+    fn handoff_pauses_and_reduce_motion_settles_it() {
+        let mut h = Handoff::default();
+        h.track(0.0, Some(&Stage::Working), Motion::Live);
+        h.track(1.0, Some(&Stage::Thinking), Motion::Live);
+        h.track(1.14, Some(&Stage::Thinking), Motion::Live);
+        let halfway = h.progress();
+        h.track(2.0, Some(&Stage::Thinking), Motion::Paused);
+        h.track(12.0, Some(&Stage::Thinking), Motion::Paused);
+        h.track(22.0, Some(&Stage::Thinking), Motion::Live);
+        assert_eq!(h.progress(), halfway);
+        h.track(22.04, Some(&Stage::Thinking), Motion::Live);
+        assert!(h.progress() > halfway && h.progress() < 1.0);
+        h.track(22.05, Some(&Stage::Thinking), Motion::Still);
+        assert_eq!(h.progress(), 1.0);
+
+        h.track(23.0, Some(&Stage::Working), Motion::Still);
+        h.track(24.0, Some(&Stage::Thinking), Motion::Still);
+        assert_eq!(h.progress(), 1.0);
+    }
+
+    #[test]
+    fn a_short_thought_cancels_the_handoff_and_the_next_can_start_again() {
+        let mut h = Handoff::default();
+        for start in [0.0, 1.0] {
+            h.track(start, Some(&Stage::Working), Motion::Live);
+            h.track(start + 0.01, Some(&Stage::Thinking), Motion::Live);
+            assert_eq!(h.progress(), 0.0);
+            h.track(start + 0.02, Some(&Stage::Working), Motion::Live);
+            assert_eq!(h.progress(), 1.0);
+        }
+    }
 
     #[test]
     fn reads_the_fanout_widget() {

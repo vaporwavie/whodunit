@@ -99,6 +99,7 @@ pub struct Window {
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
     lanes: stage::LaneClock,
+    handoff: stage::Handoff,
     seal: seal::Sweep,
     /// The slash list's highlighted row, for the composer text it was moved on.
     slash_pick: (String, usize),
@@ -141,6 +142,10 @@ impl HasCore for Window {
         self.shore_motion()
     }
 
+    fn thinking_merge(&self) -> f32 {
+        self.handoff.progress()
+    }
+
     fn lane_age(&self, label: &str) -> f32 {
         self.lanes.age(label)
     }
@@ -172,6 +177,7 @@ impl Window {
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
             lanes: stage::LaneClock::default(),
+            handoff: stage::Handoff::default(),
             seal: seal::Sweep::default(),
             slash_pick: (String::new(), 0),
             seen: Seen::default(),
@@ -192,6 +198,7 @@ impl Window {
     /// Pages switch often, and often from the keyboard, so the new one lands whole in one frame.
     fn show(&mut self, page: Page, tx: &mut Tx) {
         if self.page != page {
+            self.handoff = stage::Handoff::default();
             tx.settle();
         }
         self.page = page;
@@ -361,6 +368,7 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     let done = core.t.week.done.is_some();
     if switched || reloaded {
         s.copied_code.clear();
+        s.handoff = stage::Handoff::default();
         s.seal.clear();
         tx.settle();
     } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
@@ -407,7 +415,7 @@ fn start_soon(core: &Core, tx: &mut Tx) {
     }
 }
 
-pub fn poll(s: &mut Window, _t: f64, tx: &mut Tx) -> bool {
+pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     let shared = s.core.clone();
     let mut core = lock(&shared);
     if let Some(next) = core.expire_toasts() {
@@ -451,6 +459,11 @@ pub fn poll(s: &mut Window, _t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(left);
     }
     s.lanes.track(at_work.as_ref());
+    s.handoff.track(
+        t,
+        at_work.as_ref().filter(|_| s.page == Page::Chat),
+        s.shore_motion(),
+    );
     let live = s.page == Page::Chat
         && (chat::blank(&core) || at_work.is_some())
         && s.shore_motion() == dither::Motion::Live;
@@ -553,6 +566,20 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
             folder_picker::release_cmd(s, tx);
         }
     })
+}
+
+/// A fixed halfway frame of the scanner opening into a thought, without a pi process.
+pub fn scene_thinking_merge(s: &mut Window) {
+    crate::fixtures::scene_thinking(&s.core);
+    let core = lock(&s.core);
+    s.seen.task = core.task_id();
+    s.seen.loads = core.loads;
+    s.handoff
+        .track(0.0, Some(&Stage::Working), dither::Motion::Live);
+    s.handoff
+        .track(0.0, Some(&Stage::Thinking), dither::Motion::Live);
+    s.handoff
+        .track(0.14, Some(&Stage::Thinking), dither::Motion::Live);
 }
 
 /// A fixed halfway frame for snapshots of the sealing sweep.

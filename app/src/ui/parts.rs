@@ -166,6 +166,11 @@ fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
     Markdown::new(body)
         .style(style)
         .selectable(true)
+        .on_link_tx(|s: &mut S, url, tx| {
+            if let Err(e) = tx.open_url(url) {
+                with_core(s, |core| core.toast(format!("{e}: {url}"), "warning"));
+            }
+        })
         .code_frame(move |card, code| {
             let source = code.source.to_owned();
             let id = format!("{key}-code{}", code.index);

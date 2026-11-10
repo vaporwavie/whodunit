@@ -405,6 +405,26 @@ fn a_clicked_image_opens_whole_and_esc_closes_only_it() {
 }
 
 #[test]
+fn a_clicked_link_opens_and_one_that_cant_says_why() {
+    let core = core(|core| {
+        lock(core).t.items = vec![Item::Assistant {
+            blocks: vec![Some(crate::transcript::Block::Text(
+                "See [the docs](https://example.com/docs) or [the file](src/main.rs).".into(),
+            ))],
+            streaming: false,
+            error: None,
+        }];
+    });
+    let mut rt = window(core.clone());
+    click(&mut rt, "https://example.com/docs");
+    assert_eq!(rt.take_url_requests(), ["https://example.com/docs"]);
+    assert!(lock(&core).toasts.is_empty());
+    click(&mut rt, "src/main.rs");
+    assert!(rt.take_url_requests().is_empty());
+    assert!(lock(&core).toasts[0].text.ends_with("src/main.rs"));
+}
+
+#[test]
 fn a_clicked_chat_is_the_next_frame() {
     let one = PathBuf::from("/fixture/one.jsonl");
     let two = PathBuf::from("/fixture/two.jsonl");

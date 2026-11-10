@@ -654,7 +654,8 @@ fn tool_row(core: &Core, id: &str, name: &str, args: &str, k: &Kit) -> El {
                 .font(k.ty.mono)
                 .color(c.text_muted)
                 .truncate()
-                .shrink(),
+                .shrink()
+                .selectable(true),
         );
     let mut card = mono_frame(k).child(head);
     if let Some(run) = run.filter(|r| !r.output.trim().is_empty()) {
@@ -732,6 +733,7 @@ fn assistant_view<S: HasCore>(
                 let md = markdown(s, body.clone(), format!("{key}-md{index}"), k)
                     .streaming(streaming)
                     .build(k)
+                    .selection_group(false)
                     .key(format!("{key}-md{index}"));
                 column = column.child(md);
             }
@@ -948,10 +950,13 @@ pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
         + usize::from(core.pending_prompt.is_some())
         + usize::from(Stage::of(core).is_some_and(|stage| stage.shows()));
     let session = session_tag(core);
+    // One selection over the whole chat, as on a web page: a drag runs from the prompt through
+    // the answer and its tool output, and Cmd+A takes every row, built or not.
     col()
         .key("items")
         .w_full()
         .growth(GrowthSpec::default())
+        .selection_group(true)
         .virtual_rows_version(session)
         .virtual_rows(
             count,

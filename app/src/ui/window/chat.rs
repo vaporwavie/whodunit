@@ -3,7 +3,8 @@
 use rune::{El, ScrollSpec, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
-use super::{Window, attach, composer, is_shot_file, request_end};
+use super::composer::{self, attach, is_shot_file};
+use super::{Window, request_end};
 use crate::core::{Core, Leave, cmd};
 use crate::transcript::{Item, Shot};
 use crate::ui::stage::Stage;
@@ -117,7 +118,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El 
     } else if core.t.week.done.is_some() {
         bottom = bottom.child(ended(k));
     } else {
-        bottom = bottom.child(composer(s, core, k));
+        bottom = bottom.child(composer::build(s, core, k));
         if core.can_end_run() {
             bottom = bottom.child(
                 row()

@@ -1,4 +1,7 @@
 use super::*;
+use crate::config;
+use crate::core::SessionState;
+use crate::sessions::Summary;
 use crate::transcript::{Item, Transcript};
 use rune::{Env, Mods, Runtime};
 use std::path::{Path, PathBuf};
@@ -494,7 +497,7 @@ fn an_ended_row_shows_its_role_and_agent_icons_named_on_hover() {
         rt.pointer_move(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
         rt.frame(0.016);
         assert!(find(&rt, &tip).is_none(), "not before the delay");
-        rt.frame(SPRITE_TIP_DELAY.as_secs_f64() + 0.1);
+        rt.frame(sidebar::SPRITE_TIP_DELAY.as_secs_f64() + 0.1);
         rt.frame(1.0);
         let shown = find(&rt, &tip).expect("the tooltip opens");
         assert_eq!(shown.label.as_deref(), Some(name.as_str()));

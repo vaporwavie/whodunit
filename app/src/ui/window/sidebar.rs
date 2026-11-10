@@ -115,6 +115,25 @@ fn sprite_tip(
         .build(k, layer)
 }
 
+pub(super) fn groups(
+    core: &Core,
+) -> impl Iterator<Item = (SessionState, &'static str, Vec<&Summary>)> {
+    [
+        (SessionState::Working, "Working"),
+        (SessionState::Idle, "Idle"),
+        (SessionState::Ended, "Ended"),
+    ]
+    .into_iter()
+    .map(move |(state, label)| {
+        let sessions = core
+            .sessions
+            .iter()
+            .filter(|summary| core.session_state(summary) == state)
+            .collect();
+        (state, label, sessions)
+    })
+}
+
 pub(super) fn build(s: &Window, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El {
     // Only ended rows name their agent, so the file is read only while some show.
     let shown = |summary: &&Summary| {
@@ -157,16 +176,7 @@ pub(super) fn build(s: &Window, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El
                 .build(k)
                 .key("scoreboard"),
         );
-    for (state, label) in [
-        (SessionState::Working, "Working"),
-        (SessionState::Idle, "Idle"),
-        (SessionState::Ended, "Ended"),
-    ] {
-        let sessions: Vec<_> = core
-            .sessions
-            .iter()
-            .filter(|summary| core.session_state(summary) == state)
-            .collect();
+    for (state, label, sessions) in groups(core) {
         if sessions.is_empty() {
             continue;
         }
@@ -181,7 +191,10 @@ pub(super) fn build(s: &Window, core: &Core, k: &Kit, layer: &mut Vec<El>) -> El
                     SidebarHeader::new(label)
                         .count(sessions.len())
                         .collapsed(s.ended_collapsed)
-                        .on_toggle(|s: &mut Window, _| s.ended_collapsed = !s.ended_collapsed)
+                        .on_toggle(|s: &mut Window, _| {
+                            s.ended_collapsed = !s.ended_collapsed;
+                            s.ended_cycle_expanded = false;
+                        })
                         .build(k),
                 );
             if !s.ended_collapsed {

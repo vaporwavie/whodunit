@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use rune::{Cx, El, Family, ImageCache, Key, KeyEvent, Spring, TextEdit, TextStyle, Tx, el, text};
+use rune::{
+    Chord, ChordKey, ChordMod, Cx, El, Family, ImageCache, Key, KeyEvent, Spring, TextEdit,
+    TextStyle, Tx, el, text,
+};
 use rune_kit::diff::DiffState;
 use rune_kit::shell::{self, PaneMotion, PaneState, SidebarToggle, SplitView, Toolbar};
 use rune_kit::{ControlSize, Kit};
@@ -83,6 +86,8 @@ pub struct Window {
     pub viewing: Option<Shot>,
     pub sidebar: PaneState,
     ended_collapsed: bool,
+    /// History opened only to reveal a cycled-to session; restore it on cycling out.
+    ended_cycle_expanded: bool,
     /// The tooltip of the sidebar icon the pointer rests on, by its key.
     sprite_tip: Option<String>,
     pub page: Page,
@@ -169,6 +174,7 @@ impl Window {
             viewing: None,
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             ended_collapsed: true,
+            ended_cycle_expanded: false,
             sprite_tip: None,
             page: Page::Chat,
             board: None,
@@ -217,6 +223,44 @@ impl Window {
         core.request_leave(leave);
         catch_up(self, &core, tx);
         start_soon(&core, tx);
+    }
+
+    /// Follow the sidebar's rows across group boundaries, including collapsed history.
+    fn cycle_session(&mut self, forward: bool, tx: &mut Tx) {
+        let path = {
+            let core = lock(&self.core);
+            let sessions: Vec<_> = sidebar::groups(&core)
+                .flat_map(|(_, _, sessions)| sessions)
+                .collect();
+            let count = sessions.len();
+            if count == 0 {
+                return;
+            }
+            let current = core.path();
+            let index = sessions
+                .iter()
+                .position(|s| Some(&s.path) == current.as_ref());
+            let next = match (index, forward) {
+                (Some(i), true) => (i + 1) % count,
+                (Some(i), false) => (i + count - 1) % count,
+                (None, true) => 0,
+                (None, false) => count - 1,
+            };
+            let summary = sessions[next];
+            if core.session_state(summary) == crate::core::SessionState::Ended {
+                if self.ended_collapsed {
+                    self.ended_cycle_expanded = true;
+                    self.ended_collapsed = false;
+                }
+            } else if self.ended_cycle_expanded {
+                self.ended_collapsed = true;
+                self.ended_cycle_expanded = false;
+            }
+            summary.path.clone()
+        };
+        let key = format!("session-{}", path.display());
+        self.leave(Leave::Open(path), tx);
+        tx.scroll_into_view(key);
     }
 
     fn open_scoreboard(&mut self, tx: &mut Tx) {
@@ -297,6 +341,16 @@ pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
         return true;
+    }
+    for (key, forward) in [('[', false), (']', true)] {
+        if Chord::new(ChordKey::Char(key))
+            .with(ChordMod::Primary)
+            .with(ChordMod::Shift)
+            .matches_tx(ev, tx)
+        {
+            s.cycle_session(forward, tx);
+            return true;
+        }
     }
     if ev.is_command('n') {
         s.leave(Leave::New, tx);

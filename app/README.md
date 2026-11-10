@@ -108,6 +108,7 @@ On Linux, read ⌘ as Ctrl.
 |---|---|
 | ⌘⏎ | Open the end-run confirmation and score card |
 | ⌘N | New task in another chat; other chats keep working |
+| ⌘⇧[ / ⌘⇧] | Previous / next session in sidebar order, across all groups; wraps at either end and scrolls the selected row into view. Closed Ended history opens temporarily, then closes when you cycle out |
 | ⌘1 | Chat |
 | ⌘2 | Scoreboard |
 | ⌘O | Pick the folder pi runs in |

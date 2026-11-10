@@ -719,6 +719,264 @@ fn a_clicked_chat_is_the_next_frame() {
     let _ = std::fs::remove_file(three);
 }
 
+fn cycle_session(rt: &mut Runtime<Window>, key: char) {
+    rt.key(KeyEvent {
+        key: Key::Command(key),
+        mods: Mods {
+            cmd: true,
+            shift: true,
+            ..Mods::default()
+        },
+    });
+    rt.frame(0.016);
+}
+
+#[test]
+fn session_cycling_follows_sidebar_order_across_groups_and_wraps() {
+    let one = PathBuf::from("/fixture/cycle-one.jsonl");
+    let two = saved_chat("cycle");
+    let three = PathBuf::from("/fixture/cycle-three.jsonl");
+    let four = PathBuf::from("/fixture/cycle-four.jsonl");
+    let five = PathBuf::from("/fixture/cycle-five.jsonl");
+    let shared = core(|_| {});
+    {
+        let mut core = lock(&shared);
+        let idle = transcript_of(crate::fixtures::scene_chat);
+        let ended = crate::sessions::transcript(&two).unwrap();
+        core.sessions.push(summary(&two, &ended));
+        core.sessions.push(summary(&one, &idle));
+        core.open_task(
+            "/fixture".into(),
+            Some(&one),
+            transcript_of(crate::fixtures::scene_chat),
+        );
+        let mut last = ended;
+        last.name = Some("Another ended task".into());
+        core.sessions.push(summary(&five, &last));
+        core.open_task("/fixture".into(), Some(&five), last);
+        core.sessions.push(summary(&four, &idle));
+        core.open_task("/fixture".into(), Some(&four), idle);
+        let working = transcript_of(crate::fixtures::scene_run);
+        core.sessions.push(summary(&three, &working));
+        core.open_task("/fixture".into(), Some(&three), working);
+        core.streaming = true;
+        // Storage order interleaves groups; sidebar order is three, one, four, two, five.
+        assert_eq!(
+            core.sessions
+                .iter()
+                .map(|s| core.session_state(s))
+                .collect::<Vec<_>>(),
+            [
+                SessionState::Ended,
+                SessionState::Idle,
+                SessionState::Ended,
+                SessionState::Idle,
+                SessionState::Working,
+            ]
+        );
+        core.request_leave(Leave::Open(one.clone()));
+    }
+    let mut rt = window(shared.clone());
+    rt.poll = None;
+    rt.update(|s, _| s.draft.composer.replace_text("Unsent first draft"));
+    assert!(rt.state.ended_collapsed);
+
+    for (key, path, chat, started) in [
+        (']', &four, "Rename SessionStore to Vault", 0),
+        (']', &two, "Saved task", 1),
+        (']', &five, "Another ended task", 0),
+        (']', &three, "Retry uploads with backoff", 0),
+        (']', &one, "Rename SessionStore to Vault", 0),
+        ('[', &three, "Retry uploads with backoff", 0),
+        ('[', &five, "Another ended task", 0),
+        ('[', &two, "Saved task", 0),
+        ('[', &four, "Rename SessionStore to Vault", 0),
+        ('[', &one, "Rename SessionStore to Vault", 0),
+    ] {
+        cycle_session(&mut rt, key);
+        assert_eq!(lock(&shared).path().as_ref(), Some(path));
+        assert_eq!(title(&rt).as_deref(), Some(chat));
+        assert_eq!(unstarted(&shared), started);
+        assert_eq!(in_motion(&mut rt), Vec::<String>::new());
+        if path == &two || path == &five {
+            assert!(!rt.state.ended_collapsed);
+            assert!(shows(
+                &rt,
+                &format!("/Ended/ended-list/session-{}", path.display())
+            ));
+        }
+    }
+    assert_eq!(rt.state.draft.composer.text, "Unsent first draft");
+
+    // A new, unlisted chat starts at the first or last sidebar row.
+    for (key, expected) in [(']', &three), ('{', &five)] {
+        rt.update(|s, tx| s.leave(Leave::New, tx));
+        assert_eq!(unstarted(&shared), 1);
+        cycle_session(&mut rt, key);
+        assert_eq!(lock(&shared).path().as_ref(), Some(expected));
+    }
+
+    // A state change updates cycling to match the newly grouped sidebar.
+    {
+        let mut core = lock(&shared);
+        core.request_leave(Leave::Open(three.clone()));
+        core.streaming = false;
+        core.request_leave(Leave::Open(one.clone()));
+    }
+    cycle_session(&mut rt, '}');
+    assert_eq!(lock(&shared).path().as_ref(), Some(&four));
+    cycle_session(&mut rt, '}');
+    assert_eq!(lock(&shared).path().as_ref(), Some(&three));
+    cycle_session(&mut rt, '}');
+    assert_eq!(lock(&shared).path().as_ref(), Some(&two));
+    std::fs::remove_file(two).unwrap();
+}
+
+#[test]
+fn session_cycling_scrolls_both_lists_to_keep_the_selected_row_visible() {
+    fn assert_visible(rt: &Runtime<Window>, path: &Path, viewport: &str) {
+        let elements = rt.elements();
+        let row_key = format!("session-{}", path.display());
+        let row = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some(&row_key))
+            .unwrap();
+        let list = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some(viewport))
+            .unwrap();
+        assert!(
+            row.rect[1] >= list.rect[1] - 0.5
+                && row.rect[1] + row.rect[3] <= list.rect[1] + list.rect[3] + 0.5,
+            "{row_key}: row {:?} outside {viewport} {:?}",
+            row.rect,
+            list.rect
+        );
+    }
+
+    let idle: Vec<_> = (0..12)
+        .map(|i| PathBuf::from(format!("/fixture/cycle-scroll-idle-{i}.jsonl")))
+        .collect();
+    let ended: Vec<_> = (0..12)
+        .map(|i| PathBuf::from(format!("/fixture/cycle-scroll-ended-{i}.jsonl")))
+        .collect();
+    let shared = core(|_| {});
+    {
+        let mut core = lock(&shared);
+        for i in 0..12 {
+            // Interleaved storage order must still cycle in sidebar order.
+            for (path, done) in [(&ended[i], true), (&idle[i], false)] {
+                let mut t = transcript_of(crate::fixtures::scene_chat);
+                t.name = Some(format!("{} {i}", if done { "Ended" } else { "Idle" }));
+                t.week.done = done.then_some(crate::transcript::Done { score: 4 });
+                core.sessions.push(summary(path, &t));
+                core.open_task("/fixture".into(), Some(path), t);
+            }
+        }
+        core.request_leave(Leave::Open(idle[0].clone()));
+    }
+    let mut rt = window(shared.clone());
+    rt.poll = None;
+    rt.update(|s, _| s.draft.composer.replace_text("Keep my place"));
+    for path in idle
+        .iter()
+        .skip(1)
+        .chain(ended.iter())
+        .chain(idle.iter().take(1))
+    {
+        cycle_session(&mut rt, ']');
+        assert_eq!(lock(&shared).path().as_ref(), Some(path));
+        let viewport = if ended.contains(path) {
+            "ended-list"
+        } else {
+            "sidebar-scroll"
+        };
+        assert_visible(&rt, path, viewport);
+    }
+    // Enter collapsed history from its last row, then scroll back through both lists.
+    rt.update(|s, _| s.ended_collapsed = true);
+    rt.frame(1.0);
+    for path in ended.iter().rev().chain(idle.iter().rev()) {
+        cycle_session(&mut rt, '[');
+        assert_eq!(lock(&shared).path().as_ref(), Some(path));
+        let viewport = if ended.contains(path) {
+            "ended-list"
+        } else {
+            "sidebar-scroll"
+        };
+        assert_visible(&rt, path, viewport);
+    }
+    assert_eq!(rt.state.draft.composer.text, "Keep my place");
+    assert!(rt.state.draft.composer.focused);
+    assert_eq!(unstarted(&shared), 0);
+}
+
+#[test]
+fn cycling_out_restores_collapsed_history_unless_manually_toggled() {
+    for (collapsed, manual_toggle) in [(true, false), (false, false), (true, true)] {
+        let shared = core(|_| {});
+        let paths: Vec<_> = (0..3)
+            .map(|i| PathBuf::from(format!("/fixture/cycle-collapse-{i}.jsonl")))
+            .collect();
+        {
+            let mut core = lock(&shared);
+            for (i, path) in paths.iter().enumerate() {
+                let mut t = transcript_of(crate::fixtures::scene_chat);
+                t.week.done = (i > 0).then_some(crate::transcript::Done { score: 4 });
+                core.sessions.push(summary(path, &t));
+                core.open_task("/fixture".into(), Some(path), t);
+            }
+            core.request_leave(Leave::Open(paths[0].clone()));
+        }
+        let mut rt = window(shared.clone());
+        rt.poll = None;
+        if !collapsed {
+            click(&mut rt, "Ended/section-header");
+        }
+        for path in &paths[1..] {
+            cycle_session(&mut rt, ']');
+            assert_eq!(lock(&shared).path().as_ref(), Some(path));
+            assert!(!rt.state.ended_collapsed);
+        }
+        if manual_toggle {
+            click(&mut rt, "Ended/section-header");
+            click(&mut rt, "Ended/section-header");
+        }
+        cycle_session(&mut rt, ']');
+        assert_eq!(lock(&shared).path().as_ref(), Some(&paths[0]));
+        assert_eq!(rt.state.ended_collapsed, collapsed && !manual_toggle);
+
+        // Backward entry and exit restore the same preference too.
+        for path in paths[1..].iter().rev() {
+            cycle_session(&mut rt, '[');
+            assert_eq!(lock(&shared).path().as_ref(), Some(path));
+            assert!(!rt.state.ended_collapsed);
+        }
+        cycle_session(&mut rt, '[');
+        assert_eq!(lock(&shared).path().as_ref(), Some(&paths[0]));
+        assert_eq!(rt.state.ended_collapsed, collapsed && !manual_toggle);
+    }
+}
+
+#[test]
+fn session_cycling_handles_empty_and_single_session_lists() {
+    for scene in [
+        crate::fixtures::scene_empty as fn(&Shared),
+        crate::fixtures::scene_chat,
+    ] {
+        let shared = core(scene);
+        lock(&shared).sessions.truncate(1);
+        let mut rt = window(shared.clone());
+        rt.poll = None;
+        let original = lock(&shared).task_id();
+        for key in ['[', ']', '{', '}'] {
+            cycle_session(&mut rt, key);
+            assert_eq!(lock(&shared).task_id(), original);
+            assert_eq!(unstarted(&shared), 0);
+        }
+    }
+}
+
 #[test]
 fn ended_sessions_start_collapsed_and_toggle() {
     let core = core(crate::fixtures::scene_tasks);

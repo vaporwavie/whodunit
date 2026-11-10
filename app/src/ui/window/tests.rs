@@ -144,6 +144,87 @@ fn a_started_chat_does_not_offer_to_remove_its_folder() {
 }
 
 #[test]
+fn dealing_can_be_stopped_by_button_or_escape_with_the_prompt_and_images_restored() {
+    for (by_key, focused, draft) in [
+        (false, false, ""),
+        (false, true, "An unsent addition"),
+        (true, false, ""),
+        (true, true, "An unsent addition"),
+    ] {
+        let shared = core(crate::fixtures::scene_empty);
+        let shot = crate::fixtures::screenshot();
+        lock(&shared).submit_with("Check this screen", false, std::slice::from_ref(&shot));
+        let mut rt = window(shared.clone());
+        // Cancellation queues a replacement pi; unit tests must never start it.
+        rt.poll = None;
+        rt.update(|s, _| {
+            s.draft.composer.replace_text(draft);
+            s.draft.composer.focused = focused;
+            if !draft.is_empty() {
+                s.draft.attachments.push(shot.clone());
+            }
+        });
+        rt.frame(0.016);
+        if focused {
+            let (x, y) = rt.find("input").unwrap();
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+        }
+        assert!(shows(&rt, "/stage-deal"));
+        assert!(lock(&shared).can_stop());
+        if by_key {
+            rt.key(Key::Escape.into());
+            rt.frame(0.016);
+        } else {
+            click(&mut rt, "send");
+        }
+        assert_eq!(unstarted(&shared), 1);
+        assert!(!lock(&shared).can_stop());
+        assert!(lock(&shared).reveal().is_none());
+        assert!(rt.state.draft.composer.focused);
+        assert_eq!(
+            rt.state.draft.composer.text,
+            if draft.is_empty() {
+                "Check this screen".to_owned()
+            } else {
+                format!("Check this screen\n\n{draft}")
+            }
+        );
+        assert_eq!(
+            rt.state.draft.attachments,
+            vec![shot; if draft.is_empty() { 1 } else { 2 }]
+        );
+        rt.frame(1.0);
+        assert!(!shows(&rt, "/stage-deal"));
+        click(&mut rt, "send");
+        let core = lock(&shared);
+        assert!(core.dealing());
+        assert_eq!(core.sent_before_start().len(), 1);
+        assert!(rt.state.draft.composer.text.is_empty());
+        assert!(rt.state.draft.attachments.is_empty());
+    }
+}
+
+#[test]
+fn enter_during_dealing_keeps_the_unsent_draft() {
+    let shared = core(crate::fixtures::scene_dealing);
+    let mut rt = window(shared.clone());
+    rt.update(|s, _| {
+        s.draft.composer.replace_text("Don't lose this");
+        s.draft.composer.focused = true;
+    });
+    rt.frame(0.016);
+    let (x, y) = rt.find("input").unwrap();
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.key(Key::Enter.into());
+    rt.frame(0.016);
+    assert_eq!(rt.state.draft.composer.text, "Don't lose this");
+    assert!(lock(&shared).sent_before_start().is_empty());
+    assert!(lock(&shared).dealing());
+}
+
+#[test]
 fn ending_lives_below_the_composer_and_command_return_never_sends_the_draft() {
     let core = core(crate::fixtures::scene_chat);
     let mut rt = window(core.clone());

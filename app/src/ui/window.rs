@@ -319,8 +319,8 @@ pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
         focus_composer(s, tx);
         return true;
     }
-    if ev.key == Key::Escape && lock(&s.core).streaming {
-        lock(&s.core).abort();
+    if ev.key == Key::Escape && lock(&s.core).can_stop() {
+        composer::stop(s, tx);
         return true;
     }
     false

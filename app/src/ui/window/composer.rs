@@ -51,8 +51,18 @@ fn submit(s: &mut Window, tx: &mut Tx, follow_up: bool) {
         s.open_scoreboard(tx);
         return;
     }
-    if lock(&s.core).dialog.is_some() {
-        return;
+    {
+        let mut core = lock(&s.core);
+        if core.dialog.is_some() {
+            return;
+        }
+        if core.dealing() && !text.starts_with('/') && !text.starts_with('!') {
+            core.toast(
+                "Still dealing an agent. Stop it to edit or retry your prompt.",
+                "info",
+            );
+            return;
+        }
     }
     s.draft.composer.clear();
     s.show(Page::Chat, tx);
@@ -67,14 +77,41 @@ fn submit(s: &mut Window, tx: &mut Tx, follow_up: bool) {
     tx.scroll_to_bottom("transcript");
 }
 
+pub(super) fn stop(s: &mut Window, tx: &mut Tx) {
+    let shared = s.core.clone();
+    let mut core = lock(&shared);
+    if !core.dealing() {
+        core.abort();
+        return;
+    }
+    let previous = core.task_id();
+    let Some((mut prompt, mut shots)) = core.cancel_deal() else {
+        return;
+    };
+    let draft = std::mem::take(&mut s.draft);
+    catch_up(s, &core, tx);
+    s.drafts.remove(&previous);
+    s.draft.composer = draft.composer;
+    s.draft.attachments = draft.attachments;
+    if !s.draft.composer.text.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&s.draft.composer.text);
+    }
+    s.draft.composer.replace_text(prompt);
+    shots.append(&mut s.draft.attachments);
+    s.draft.attachments = shots;
+    s.draft.composer.focused = true;
+    start_soon(&core, tx);
+}
+
 fn composer_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let empty = s.draft.composer.text.is_empty();
     if dialog_keys(&mut lock(&s.core), ev, empty) {
         return true;
     }
     match &ev.key {
-        Key::Escape if lock(&s.core).streaming => {
-            lock(&s.core).abort();
+        Key::Escape if lock(&s.core).can_stop() => {
+            stop(s, tx);
             true
         }
         Key::Enter if ev.mods.cmd && ev.mods.shift => {
@@ -327,15 +364,19 @@ fn shell_mode(input: &str) -> Option<&'static str> {
     None
 }
 
-/// One slot that is Stop while the agent works on an empty field and Send otherwise, so swapping never moves the footer.
+/// Stop stays available throughout dealing, even with a draft; once streaming, that draft steers.
 fn send_button(s: &Window, core: &Core, k: &Kit) -> El {
     let empty = s.draft.composer.text.trim().is_empty() && s.draft.attachments.is_empty();
-    if core.streaming && empty {
+    if core.dealing() || (core.streaming && empty) {
         return IconButton::new(&STOP)
             .variant(IconButtonVariant::Submit)
-            .label("Stop")
+            .label(if core.dealing() {
+                "Stop dealing"
+            } else {
+                "Stop"
+            })
             .shortcut("esc")
-            .on_press(|s: &mut Window| lock(&s.core).abort())
+            .on_press_tx(stop)
             .build(k)
             .key("send");
     }

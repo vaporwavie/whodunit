@@ -18,6 +18,8 @@ The sidebar lists chats from every folder in three groups:
 
 Each row shows its folder, with the size and score added only after the run ends. An ended row also shows its role's icon before the title and its agent's icon at the end; rest the pointer on either to see its name. Opening a saved chat starts pi in that chat's folder; live chats reconnect to their existing process. Changing folders starts a new chat and leaves other tasks running. **Quitting or crashing the app does not stop work.** The background service owns each pi process and keeps reading its output with no window connected. Reopening restores live chats, including partial answers, queued messages, fan-out progress and unanswered dialogs. An explicit `--cwd` opens a new chat in that folder while reconnecting the others.
 
+If classification or dealing stalls, click **Stop dealing** in the composer's send slot or press Esc. The app stops that chat's pi process and restores the first prompt and its images to the composer for editing or retry. Any unsent draft stays with them, and other chats keep working. Once an agent has been dealt, Stop aborts its turn without changing the agent.
+
 Code snippets have a **Copy** button that copies just the code, without Markdown fences. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
 Edits and writes show as diffs. Dot art carries the working state; a status line over the composer appears only for dealing, fan-out progress, retries and compaction. Thinking stays hidden until the run ends, since a trace's style names the lab: while the agent thinks, three thick bands of dithered redaction write themselves, with broad runs and irregular breaks. A finished thought keeps two still bands with a shorter last line, the same size whatever the trace's length. When thinking replaces the scanner, its strip opens into those lines over 280 ms without restarting the sweep. The handoff pauses while unfocused and is skipped with Reduce Motion or when opening an existing chat. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
@@ -114,7 +116,7 @@ On Linux, read ⌘ as Ctrl.
 | ⌘V | Paste text, or attach a copied image or image files |
 | ⌫ | In an empty composer: remove the last attached image |
 | Tab / ⏎ | In the `/` list: complete the command / run it (commands that need an argument are completed instead) |
-| Esc | Cancel the selected chat's dialog, or stop its agent |
+| Esc | Cancel the selected chat's dialog, stop dealing and restore the prompt, or stop its agent |
 
 ## Command line
 

@@ -151,6 +151,71 @@ fn folderless_chats_run_pi_and_resume_after_the_workspace_is_removed() {
 }
 
 #[test]
+fn a_stalled_deal_can_be_stopped_and_retried_without_stopping_other_chats() {
+    isolated(
+        "a_stalled_deal_can_be_stopped_and_retried_without_stopping_other_chats",
+        |root| {
+            let shared = app(root);
+            navigate(&shared, Leave::New);
+            lock(&shared).submit("background task", false);
+            wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
+            let background = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+
+            navigate(&shared, Leave::New);
+            wait(&shared, |core| core.loads == 1);
+            let stalled = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            let old_id = lock(&shared).task_id();
+            let shot = whodunit::fixtures::screenshot();
+            std::fs::write(root.join("stall-dealing"), "").unwrap();
+            lock(&shared).submit_with("Check this screen", false, std::slice::from_ref(&shot));
+            wait(&shared, |_| stalled.with_extension("dealing").exists());
+            let pid = std::fs::read_to_string(stalled.with_extension("dealing")).unwrap();
+            assert!(lock(&shared).can_stop());
+            assert!(!lock(&shared).streaming);
+            assert_eq!(state(&shared, &stalled), SessionState::Working);
+
+            let (prompt, shots) = lock(&shared).cancel_deal().unwrap();
+            assert_eq!(prompt, "Check this screen");
+            assert_eq!(shots, [shot]);
+            assert_ne!(lock(&shared).task_id(), old_id);
+            assert_eq!(state(&shared, &background), SessionState::Working);
+            assert!(!lock(&shared).sessions.iter().any(|s| s.path == stalled));
+            wait(&shared, |_| {
+                !std::process::Command::new("kill")
+                    .args(["-0", pid.trim()])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            });
+
+            // Retry can be sent before the replacement process has started.
+            lock(&shared).submit_with(&prompt, false, &shots);
+            start_unstarted(&shared);
+            wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
+            let retried = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            assert_ne!(retried, stalled);
+            assert_eq!(lock(&shared).cwd, root);
+            assert!(lock(&shared).reveal().is_none());
+            assert!(
+                matches!(lock(&shared).t.items.as_slice(), [Item::User { text, shots: images }]
+                if text == &prompt && images == &shots)
+            );
+            std::fs::write(retried.with_extension("release"), "").unwrap();
+            wait(&shared, |core| !core.working() && answer(core) == prompt);
+            assert_eq!(state(&shared, &background), SessionState::Working);
+            assert!(!lock(&shared).sessions.iter().any(|s| s.path == stalled));
+
+            navigate(&shared, Leave::Open(background.clone()));
+            std::fs::write(background.with_extension("release"), "").unwrap();
+            wait(&shared, |core| {
+                !core.streaming && answer(core) == "background task"
+            });
+        },
+    );
+}
+
+#[test]
 fn chats_keep_working_independently() {
     isolated("chats_keep_working_independently", run_chats);
 }

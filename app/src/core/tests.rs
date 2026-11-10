@@ -129,6 +129,74 @@ fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
 }
 
 #[test]
+fn cancelling_a_deal_restores_the_prompt_and_retires_its_process_generation() {
+    let mut core = core();
+    core.request_leave(Leave::New);
+    let background = core.task_id();
+    core.streaming = true;
+    core.session_file = Some("/background.jsonl".into());
+    core.t.first_prompt = Some("Another task".into());
+    core.request_leave(Leave::New);
+    let cancelled = core.task_id();
+    core.session_file = Some("/not-written-yet.jsonl".into());
+    let shot = crate::fixtures::screenshot();
+    core.submit_with("Check this screen", false, std::slice::from_ref(&shot));
+    assert!(core.can_stop());
+    assert!(!core.streaming);
+    assert_eq!(core.sessions.len(), 2);
+    assert!(!core.outbox.is_empty());
+
+    let restored = core.cancel_deal().unwrap();
+    assert_eq!(restored, ("Check this screen".into(), vec![shot.clone()]));
+    assert_ne!(core.task_id(), cancelled);
+    assert_eq!(core.cwd, Path::new("/project"));
+    assert!(!core.working());
+    assert!(!core.can_stop());
+    assert!(core.pending_prompt.is_none() && core.pending_shots.is_empty());
+    assert!(core.pending.is_empty() && core.outbox.is_empty());
+    assert!(core.dealing_since.is_none());
+    assert!(core.session_file.is_none());
+    assert_eq!(core.unstarted, [background, core.task_id()]);
+    assert_eq!(core.sessions.len(), 1);
+    assert!(core.tasks[&background].streaming);
+    assert!(!core.tasks.contains_key(&cancelled));
+    core.for_task(cancelled, |_| {
+        panic!("late deal or exit must not reach the new task")
+    });
+    assert!(core.cancel_deal().is_none(), "stopping twice is a no-op");
+
+    core.submit_with(&restored.0, false, &restored.1);
+    assert!(core.dealing());
+    assert_eq!(core.outbox.len(), 1);
+    assert_eq!(core.outbox[0]["message"], "Check this screen");
+    assert_eq!(Shot::from_block(&core.outbox[0]["images"][0]), Some(shot));
+}
+
+#[test]
+fn cancelling_a_deal_never_discards_a_dealt_agent_or_a_fanout() {
+    let mut core = core();
+    core.submit("A task", false);
+    core.t.week.deal = Some(crate::transcript::Deal::default());
+    assert!(core.cancel_deal().is_none());
+    core.streaming = true;
+    assert!(core.can_stop());
+    core.abort();
+    assert_eq!(core.outbox.last().unwrap()["type"], "abort");
+    assert!(core.t.week.deal.is_some());
+
+    core.streaming = false;
+    core.t.week.deal = None;
+    core.widgets
+        .insert("fanout".into(), vec!["fan-out · A running".into()]);
+    assert!(!core.can_stop());
+    assert!(core.cancel_deal().is_none());
+    core.widgets.clear();
+    core.apply(json!({"type": "extension_ui_request", "id": "role", "method": "select", "title": "Which role?", "options": ["builder"]}));
+    assert!(core.cancel_deal().is_none());
+    assert!(core.dialog.is_some());
+}
+
+#[test]
 fn classification_and_fanouts_are_listed_before_a_session_file_exists() {
     let mut core = core();
     core.task.generation = 1;

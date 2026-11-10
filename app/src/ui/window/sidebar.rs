@@ -7,7 +7,7 @@ use rune::{El, Icon, ScrollSpec, col};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarHeader, SidebarRow, SidebarSection};
 use rune_kit::{Kit, Tooltip};
 
-use super::{Page, Window, sprite};
+use super::{Page, Window, rename, sprite};
 use crate::config;
 use crate::core::{Core, Leave, SessionState, cmd};
 use crate::sessions::Summary;
@@ -34,12 +34,22 @@ fn session_row(
     layer: &mut Vec<El>,
 ) -> El {
     let current = core.session_file.as_deref() == Some(summary.path.to_string_lossy().as_ref());
+    let selected = current && s.page == Page::Chat;
     let path = summary.path.clone();
     let subtitle = summary.subtitle_at(SystemTime::now());
     let mut r = SidebarRow::new(summary.title.clone())
         .subtitle(subtitle.clone())
-        .selected(current && s.page == Page::Chat)
-        .on_select(move |s: &mut Window, tx| s.leave(Leave::Open(path.clone()), tx));
+        .selected(selected)
+        .on_select(move |s: &mut Window, tx| {
+            if selected {
+                rename::begin(s, rename::Place::Sidebar, tx);
+            } else {
+                s.leave(Leave::Open(path.clone()), tx);
+            }
+        });
+    if selected && let Some(edit) = rename::at(s, rename::Place::Sidebar) {
+        r = r.renaming(edit, rename::edit, rename::save, rename::cancel);
+    }
     // The role's and the agent's sprites, only once the run has ended and they can show.
     // The role's sits in the title's line, so it drops to centre on both lines.
     let deal = summary.revealed();
@@ -69,6 +79,11 @@ fn session_row(
         r = r.status(RowStatus::Attention);
     }
     let mut r = r.build(k);
+    if selected {
+        r = r
+            .hover(k.c.bg_accent.alpha(0.08))
+            .cursor(rune::Cursor::Text);
+    }
     if let Some(deal) = deal {
         r = r.label(format!(
             "{}, {}, {}, {}",

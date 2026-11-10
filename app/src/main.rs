@@ -150,6 +150,8 @@ fn main() {
                 s.draft.composer.replace_text("!cargo test");
             }),
             ("growing", |s: &mut Window| fixtures::scene_growing(&s.core)),
+            ("rename", window::rename::scene),
+            ("rename-sidebar", window::rename::sidebar_scene),
             ("picker", |s: &mut Window| {
                 fixtures::scene_chat(&s.core);
                 s.picker = fixtures::picker();

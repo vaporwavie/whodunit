@@ -511,6 +511,17 @@ impl Core {
 
     // Commands the views call.
 
+    pub fn rename_chat(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        self.send(
+            json!({"type": "set_session_name", "name": name}),
+            Some(Pending::Other),
+        )
+    }
+
     pub fn submit(&mut self, text: &str, follow_up: bool) {
         self.submit_with(text, follow_up, &[]);
     }
@@ -566,10 +577,7 @@ impl Core {
                     return false;
                 }
                 "name" => {
-                    self.send(
-                        json!({"type": "set_session_name", "name": args.trim()}),
-                        Some(Pending::Other),
-                    );
+                    self.rename_chat(args);
                     return false;
                 }
                 "export" => {

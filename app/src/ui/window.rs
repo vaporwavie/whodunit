@@ -29,6 +29,7 @@ mod board;
 mod chat;
 mod composer;
 pub mod folder_picker;
+pub mod rename;
 mod sidebar;
 mod viewer;
 
@@ -86,6 +87,7 @@ pub struct Window {
     dropping: bool,
     /// The image open full size over the window.
     pub viewing: Option<Shot>,
+    renaming: Option<rename::Rename>,
     pub sidebar: PaneState,
     ended_collapsed: bool,
     /// History opened only to reveal a cycled-to session; restore it on cycling out.
@@ -190,6 +192,7 @@ impl Window {
             images: None,
             dropping: false,
             viewing: None,
+            renaming: None,
             sidebar: PaneState::new(264.0).range(180.0, 480.0),
             ended_collapsed: true,
             ended_cycle_expanded: false,
@@ -229,6 +232,7 @@ impl Window {
     fn show(&mut self, page: Page, tx: &mut Tx) {
         if self.page != page {
             self.handoff = stage::Handoff::default();
+            rename::save(self, tx);
             tx.settle();
         }
         self.page = page;
@@ -237,6 +241,7 @@ impl Window {
     /// Shows the chat in this commit, so the next frame is already it. A chat that needs a pi
     /// process gets one from `poll`, off the UI thread, on the frame this asks for.
     pub(crate) fn leave(&mut self, leave: Leave, tx: &mut Tx) {
+        rename::save(self, tx);
         self.show(Page::Chat, tx);
         let shared = self.core.clone();
         let mut core = lock(&shared);
@@ -340,6 +345,9 @@ pub fn dialog_keys(core: &mut Core, ev: &KeyEvent, empty_field: bool) -> bool {
 }
 
 pub fn on_key(s: &mut Window, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if s.renaming.is_some() && rename::on_key(s, ev, tx) {
+        return true;
+    }
     if s.viewing.is_some() {
         // Esc closes the image, and only the image: it never also stops the agent.
         if ev.key == Key::Escape {
@@ -436,6 +444,7 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
         s.drafts.insert(s.seen.task, previous);
         s.seen.task = core.task_id();
         s.viewing = None;
+        s.renaming = None;
         s.draft.composer.focused = true;
         s.diffs.clear();
         tx.scroll_to_bottom_instant("transcript");
@@ -519,6 +528,7 @@ fn start_soon(core: &Core, tx: &mut Tx) {
 }
 
 pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
+    let renamed = rename::poll(s, tx);
     let shared = s.core.clone();
     let mut core = lock(&shared);
     if let Some(next) = core.expire_toasts() {
@@ -530,7 +540,7 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     if let Some(until) = s.copied_code.values().min() {
         tx.wake_after(*until - now);
     }
-    let mut changed = s.copied_code.len() != before;
+    let mut changed = renamed || s.copied_code.len() != before;
     changed |= s.picker.poll();
     changed |= catch_up(s, &core, tx);
     let sweeping = s.seal.progress().is_some() || s.develop.progress().is_some();
@@ -611,8 +621,8 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     changed || live
 }
 
-fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
-    let title = match page {
+fn toolbar(s: &Window, core: &Core, k: &Kit) -> Toolbar {
+    let title = match s.page {
         Page::Scoreboard => "Scoreboard".to_owned(),
         Page::Chat => core
             .t
@@ -623,13 +633,15 @@ fn toolbar(core: &Core, page: Page, k: &Kit) -> Toolbar {
             .unwrap_or_else(|| "New task".to_owned()),
     };
     let title = title.lines().next().unwrap_or_default().to_owned();
-    let title = text(title)
-        .key("title")
-        .font(k.ty.ui_medium)
-        .color(k.c.text_base)
-        .truncate()
-        .shrink()
-        .min_w(0.0);
+    let title = if s.page == Page::Chat {
+        rename::title(s, title, k)
+    } else {
+        text(title)
+            .key("title")
+            .font(k.ty.ui_medium)
+            .color(k.c.text_base)
+            .truncate()
+    };
     Toolbar::new().leading(title)
 }
 
@@ -667,7 +679,7 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
         window = window.sidebar_title(wordmark(k, cx.titlebar_inset() > 0.0));
     }
     let window = window
-        .toolbar(toolbar(&core, s.page, k))
+        .toolbar(toolbar(s, &core, k))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
         .toolbar_in_panel()

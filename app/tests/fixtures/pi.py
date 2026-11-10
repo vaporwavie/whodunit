@@ -73,6 +73,11 @@ for line in sys.stdin:
         response(command, {'sessionFile': None if deferred else str(path), 'isStreaming': busy})
     elif kind == 'get_entries':
         response(command, {'entries': [e for e in entries if 'id' in e], 'leafId': leaf()})
+    elif kind == 'set_session_name':
+        name = command['name'].strip()
+        append({'type': 'session_info', 'name': name})
+        emit({'type': 'session_info_changed', 'name': name})
+        response(command)
     elif kind == 'get_commands':
         response(command, {'commands': []})
     elif kind == 'get_session_stats':

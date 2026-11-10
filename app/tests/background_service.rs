@@ -170,6 +170,172 @@ fn working_chats_survive_disconnect_and_finish_without_a_ui() {
 }
 
 #[test]
+fn renamed_chats_persist_through_switches_reconnects_and_service_restarts() {
+    isolated(
+        "renamed_chats_persist_through_switches_reconnects_and_service_restarts",
+        |root| {
+            let shared = app(root);
+            new_chat(&shared, Leave::NewIn(root.to_owned()));
+            lock(&shared).submit("first task", false);
+            wait(&shared, |core| core.streaming);
+            let first = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            assert!(!lock(&shared).rename_chat("   "));
+            assert!(lock(&shared).rename_chat("  My first chat  "));
+            wait(&shared, |core| {
+                core.t.name.as_deref() == Some("My first chat")
+            });
+            assert!(lock(&shared).streaming);
+            assert!(lock(&shared).reveal().is_none());
+
+            new_chat(&shared, Leave::New);
+            lock(&shared).submit("second task", false);
+            wait(&shared, |core| core.streaming);
+            let second = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            assert!(lock(&shared).rename_chat("My second chat"));
+            // The name event may arrive after switching; it must still update only its chat.
+            new_chat(&shared, Leave::Open(first.clone()));
+            wait(&shared, |core| {
+                core.sessions
+                    .iter()
+                    .any(|s| s.path == second && s.title == "My second chat")
+            });
+            assert_eq!(lock(&shared).t.name.as_deref(), Some("My first chat"));
+            std::fs::write(first.with_extension("release"), "").unwrap();
+            wait(&shared, |core| core.can_end_run());
+            lock(&shared).end_run();
+            wait(&shared, |core| core.dialog.is_some());
+            lock(&shared).pick(0);
+            wait(&shared, |core| core.t.week.done.is_some());
+            assert!(lock(&shared).rename_chat("Finished first chat"));
+            wait(&shared, |core| {
+                core.t.name.as_deref() == Some("Finished first chat")
+            });
+            drop(shared);
+
+            let reopened = resume(root);
+            new_chat(&reopened, Leave::Open(first.clone()));
+            assert_eq!(
+                lock(&reopened).t.name.as_deref(),
+                Some("Finished first chat")
+            );
+            assert!(lock(&reopened).t.week.done.is_some());
+            drop(reopened);
+            service::stop().unwrap();
+            service::ensure_started_with(Path::new(env!("CARGO_BIN_EXE_whodunit"))).unwrap();
+
+            let reopened = app(root);
+            new_chat(&reopened, Leave::Open(first));
+            assert_eq!(
+                lock(&reopened).t.name.as_deref(),
+                Some("Finished first chat")
+            );
+            assert!(lock(&reopened).t.week.done.is_some());
+            new_chat(&reopened, Leave::Open(second));
+            assert_eq!(lock(&reopened).t.name.as_deref(), Some("My second chat"));
+        },
+    );
+}
+
+#[test]
+fn inline_titles_save_on_enter_blur_and_navigation_but_escape_discards() {
+    isolated(
+        "inline_titles_save_on_enter_blur_and_navigation_but_escape_discards",
+        |root| {
+            use rune::{Env, Key, KeyEvent, Mods, Runtime};
+            use whodunit::ui::window::{self, Window};
+
+            fn click(rt: &mut Runtime<Window>, key: &str) {
+                let (x, y) = rt.find(key).unwrap();
+                rt.pointer_down(x, y);
+                rt.pointer_up(x, y);
+                rt.frame(0.016);
+                rt.frame(0.016);
+            }
+
+            let shared = app(root);
+            new_chat(&shared, Leave::NewIn(root.to_owned()));
+            lock(&shared).submit("first task", false);
+            wait(&shared, |core| core.streaming);
+            let file = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            let sidebar = format!("session-{}", file.display());
+            let mut rt = Runtime::new(
+                Window::new(shared.clone()),
+                window::view,
+                (1180.0, 780.0),
+                Env::new(true, 1.0),
+            );
+            rt.poll = Some(window::poll);
+            rt.on_key = Some(window::on_key);
+            rt.frame(0.0);
+            rt.frame(1.0);
+            let mut saved = String::new();
+            for target in ["title", sidebar.as_str()] {
+                for action in ["enter", "blur", "escape"] {
+                    click(&mut rt, target);
+                    let name = format!("{target}-{action}");
+                    rt.key(Key::Text(name.clone()).into());
+                    rt.frame(0.016);
+                    match action {
+                        "enter" => rt.key(Key::Enter.into()),
+                        "escape" => rt.key(Key::Escape.into()),
+                        _ => click(&mut rt, "input"),
+                    }
+                    rt.frame(0.016);
+                    rt.frame(0.016);
+                    if action == "escape" {
+                        assert_eq!(lock(&shared).t.name.as_deref(), Some(saved.as_str()));
+                        assert!(!std::fs::read_to_string(&file).unwrap().contains(&name));
+                    } else {
+                        wait(&shared, |core| core.t.name.as_deref() == Some(&name));
+                        saved = name;
+                        rt.frame(0.016);
+                    }
+                    assert!(lock(&shared).streaming);
+                    assert!(lock(&shared).reveal().is_none());
+                }
+            }
+
+            click(&mut rt, "title");
+            rt.key(Key::Text("Saved before editing the sidebar".into()).into());
+            rt.frame(0.016);
+            click(&mut rt, &sidebar);
+            wait(&shared, |core| {
+                core.t.name.as_deref() == Some("Saved before editing the sidebar")
+            });
+            rt.key(Key::Text("Discard this sidebar edit".into()).into());
+            rt.frame(0.016);
+            rt.key(Key::Escape.into());
+            rt.frame(0.016);
+            assert_eq!(
+                lock(&shared).t.name.as_deref(),
+                Some("Saved before editing the sidebar")
+            );
+
+            click(&mut rt, "title");
+            rt.key(Key::Text("Saved before switching".into()).into());
+            rt.frame(0.016);
+            rt.key(KeyEvent {
+                key: Key::Command('n'),
+                mods: Mods {
+                    cmd: true,
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.016);
+            rt.frame(0.016);
+            wait(&shared, |core| {
+                core.ready && core.session_file.as_deref() != file.to_str()
+            });
+            new_chat(&shared, Leave::Open(file));
+            assert_eq!(
+                lock(&shared).t.name.as_deref(),
+                Some("Saved before switching")
+            );
+        },
+    );
+}
+
+#[test]
 fn a_pending_score_reconnects_and_is_answered_once() {
     isolated("a_pending_score_reconnects_and_is_answered_once", |root| {
         let shared = app(root);

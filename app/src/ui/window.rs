@@ -16,14 +16,15 @@ use crate::scoreboard::{self, Board};
 use crate::sprites;
 use crate::transcript::Shot;
 use crate::ui::dither;
-use crate::ui::folder_picker::{self, FolderPicker};
 use crate::ui::parts::{self, HasCore};
 use crate::ui::seal;
 use crate::ui::stage::{self, Stage};
+use folder_picker::FolderPicker;
 
 mod board;
 mod chat;
 mod composer;
+pub mod folder_picker;
 mod sidebar;
 mod viewer;
 

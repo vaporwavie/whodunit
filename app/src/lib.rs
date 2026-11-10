@@ -12,7 +12,6 @@ pub mod sprites;
 pub mod transcript;
 pub mod ui {
     pub mod dither;
-    pub mod folder_picker;
     pub mod parts;
     pub mod seal;
     pub mod stage;

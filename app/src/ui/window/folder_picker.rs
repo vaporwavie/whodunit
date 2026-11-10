@@ -10,10 +10,10 @@ use rune::{
 };
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, TextInput, glyphs};
 
+use super::Window;
 use crate::config::{self, AppConfig};
 use crate::core::{Leave, cmd};
 use crate::folders::{self, Recent};
-use crate::ui::window::Window;
 
 const ROW_H: f32 = 30.0;
 const LIST_H: f32 = 330.0;

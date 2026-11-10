@@ -6,11 +6,11 @@ use rune_kit::{
     Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, ProgressCircle, popover,
 };
 
+use super::folder_picker;
 use super::{Page, Window, catch_up, chat, dialog_keys, request_end, start_soon};
 use crate::config;
 use crate::core::{APP_COMMANDS, Core, cmd, lock};
 use crate::transcript::{SHOT_EXTENSIONS, Shot};
-use crate::ui::folder_picker;
 use crate::ui::parts;
 
 static FOLDER: Icon = Icon {

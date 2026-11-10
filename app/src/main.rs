@@ -45,6 +45,10 @@ fn main() {
         return;
     }
     let headless = std::env::args().any(|a| HEADLESS_FLAGS.contains(&a.as_str()));
+    if !headless {
+        rune::set_app_icon(include_bytes!("../assets/icons/app.png").as_slice())
+            .expect("the bundled app icon must be a valid image");
+    }
 
     let config = if headless {
         AppConfig::default()

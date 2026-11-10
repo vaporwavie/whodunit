@@ -89,7 +89,8 @@ fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
     rt.frame(1.0); // The welcome's one exit fade has finished before classification returns.
 
     let message = json!({"role": "user", "content": [
-        {"type": "text", "text": "Check this screen"}, shot.to_block()
+        {"type": "text", "text": "Check this screen\n\n[Image: original 2880x972, displayed at 2000x675. Multiply coordinates by 1.44 to map to original image.]"},
+        shot.to_block()
     ]});
     let records = [
         json!({"type": "entry_appended", "entry": {
@@ -116,6 +117,13 @@ fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
                 .iter()
                 .any(|e| e.text.as_deref() == Some("Check this screen")),
             "the prompt disappeared after {kind}"
+        );
+        assert!(
+            !elements.iter().any(|e| e
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("Multiply coordinates"))),
+            "the image resize hint leaked after {kind}"
         );
         assert!(lock(&shared).reveal().is_none());
     }

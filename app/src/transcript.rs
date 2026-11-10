@@ -342,6 +342,50 @@ pub fn content_text(content: &Value) -> String {
         .join("")
 }
 
+/// Display text for a user message. pi stores its model-only resize notes in the prompt;
+/// hide only that appended paragraph, with images present, without changing model context.
+pub fn prompt_text(content: &Value) -> String {
+    let text = content_text(content);
+    let has_images = content.as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+    });
+    if has_images
+        && let Some((prompt, notes)) = text.rsplit_once("\n\n")
+        && notes.split('\n').all(is_resize_note)
+    {
+        return prompt.to_owned();
+    }
+    text
+}
+
+/// Matches pi's `formatDimensionNote`, not arbitrary bracketed image text.
+fn is_resize_note(text: &str) -> bool {
+    let Some(note) = text
+        .strip_prefix("[Image: original ")
+        .and_then(|s| s.strip_suffix(" to map to original image.]"))
+    else {
+        return false;
+    };
+    let Some((original, rest)) = note.split_once(", displayed at ") else {
+        return false;
+    };
+    let Some((displayed, scale)) = rest.split_once(". Multiply coordinates by ") else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let dimensions = |s: &str| {
+        s.split_once('x')
+            .is_some_and(|(width, height)| digits(width) && digits(height))
+    };
+    dimensions(original)
+        && dimensions(displayed)
+        && scale.split_once('.').is_some_and(|(whole, fraction)| {
+            digits(whole) && fraction.len() == 2 && digits(fraction)
+        })
+}
+
 pub fn args_summary(args: &Value) -> String {
     let Some(map) = args.as_object() else {
         return args.to_string();
@@ -562,7 +606,7 @@ impl Transcript {
         match message.get("role").and_then(Value::as_str) {
             Some("user") => {
                 let content = message.get("content").unwrap_or(&Value::Null);
-                let text = content_text(content);
+                let text = prompt_text(content);
                 if self.first_prompt.is_none() {
                     self.first_prompt = Some(text.clone());
                 }

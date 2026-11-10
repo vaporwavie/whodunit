@@ -8,7 +8,7 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::transcript::{
-    DEAL, DONE, Deal, FANOUT_PICK, SWITCH, Transcript, Week, content_text, str_of,
+    DEAL, DONE, Deal, FANOUT_PICK, SWITCH, Transcript, Week, content_text, prompt_text, str_of,
 };
 
 #[derive(Clone, Debug)]
@@ -146,7 +146,7 @@ fn summarize(path: &Path, updated: SystemTime) -> Option<Summary> {
                 let message = entry.get("message").unwrap_or(&Value::Null);
                 if message.get("role").and_then(Value::as_str) == Some("user") {
                     first_prompt =
-                        Some(content_text(message.get("content").unwrap_or(&Value::Null)));
+                        Some(prompt_text(message.get("content").unwrap_or(&Value::Null)));
                 }
             }
             _ => {}

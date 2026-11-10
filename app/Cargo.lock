@@ -2581,6 +2581,7 @@ source = "git+https://github.com/vaporwavie/rune?rev=d25fc659ef34905d59f4235f625
 dependencies = [
  "pulldown-cmark",
  "rune",
+ "rune-mermaid",
  "rune-motion",
  "unicode-segmentation",
 ]
@@ -2592,6 +2593,14 @@ source = "git+https://github.com/vaporwavie/rune?rev=d25fc659ef34905d59f4235f625
 dependencies = [
  "objc2 0.5.3",
  "rune-notify",
+]
+
+[[package]]
+name = "rune-mermaid"
+version = "0.0.1"
+source = "git+https://github.com/vaporwavie/rune?rev=d25fc659ef34905d59f4235f625cc6e6dd7813db#d25fc659ef34905d59f4235f625cc6e6dd7813db"
+dependencies = [
+ "rune",
 ]
 
 [[package]]
@@ -3772,6 +3781,7 @@ name = "whodunit"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "libc",
  "objc2 0.5.3",
  "rune",
  "rune-kit",
@@ -3779,6 +3789,7 @@ dependencies = [
  "rune-theme-opencode",
  "serde",
  "serde_json",
+ "tempfile",
  "wgpu",
 ]
 

@@ -9,7 +9,7 @@ use rune_kit::{
 use super::folder_picker;
 use super::{Page, Window, catch_up, chat, dialog_keys, request_end, start_soon};
 use crate::config;
-use crate::core::{APP_COMMANDS, Core, cmd, lock};
+use crate::core::{APP_COMMANDS, Core, Leave, cmd, lock};
 use crate::transcript::{SHOT_EXTENSIONS, Shot};
 use crate::ui::parts;
 
@@ -281,15 +281,39 @@ fn composer_footer(s: &Window, core: &Core, k: &Kit) -> El {
 
 /// A new task picks its folder where it's typed, as the session belongs to it from the first prompt.
 fn workspace_button(core: &Core, k: &Kit) -> El {
-    Button::new(config::short_path(&core.cwd))
+    let temporary = config::is_temporary(&core.cwd);
+    let picker = Button::new(config::short_path(&core.cwd))
         .icon(&FOLDER)
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Small)
-        .help("Change the folder pi works in")
+        .help(if temporary {
+            "Temporary workspace; files are deleted when you quit. Choose a folder to keep your work."
+        } else {
+            "Change the folder pi works in"
+        })
         .shortcut(cmd("O"))
         .on_press(folder_picker::show)
         .build(k)
-        .key("workspace")
+        .key("workspace");
+    let mut workspace = row().center_y().child(picker);
+    if !temporary {
+        workspace = workspace.child(
+            IconButton::new(&REMOVE)
+                .variant(IconButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .label("Remove folder")
+                .help("Use a temporary workspace instead")
+                .on_press_tx(|s: &mut Window, tx| {
+                    let draft = std::mem::take(&mut s.draft);
+                    s.leave(Leave::Temporary, tx);
+                    s.draft = draft;
+                    s.draft.composer.focused = true;
+                })
+                .build(k)
+                .key("remove-folder"),
+        );
+    }
+    workspace
 }
 
 /// `!` runs a shell command and `!!` keeps its output out of the agent's context.

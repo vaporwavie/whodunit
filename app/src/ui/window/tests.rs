@@ -90,6 +90,7 @@ fn summary(path: &Path, t: &Transcript) -> Summary {
         cwd: "/fixture".into(),
         title: t.title().unwrap(),
         week: t.week.clone(),
+        updated: std::time::SystemTime::now(),
     }
 }
 
@@ -105,6 +106,41 @@ fn saved_chat(name: &str) -> PathBuf {
     ];
     std::fs::write(&path, lines.join("\n")).unwrap();
     path
+}
+
+#[test]
+fn the_composer_can_remove_its_folder_without_losing_the_draft() {
+    let shared = core(crate::fixtures::scene_empty);
+    let mut rt = window(shared.clone());
+    rt.poll = None;
+    let shot = crate::fixtures::screenshot();
+    rt.update(|s, _| {
+        s.draft
+            .composer
+            .replace_text("A question without a project");
+        s.draft.attachments = vec![shot.clone()];
+    });
+    rt.frame(0.016);
+    assert!(shows(&rt, "/remove-folder"));
+    click(&mut rt, "remove-folder");
+    assert!(rt.state.draft.composer.focused);
+    assert_eq!(rt.state.draft.composer.text, "A question without a project");
+    assert_eq!(rt.state.draft.attachments, vec![shot]);
+    assert!(config::is_temporary(&lock(&shared).cwd));
+    assert_eq!(unstarted(&shared), 1);
+    assert!(!shows(&rt, "/remove-folder"));
+    assert!(shows(&rt, "/workspace"));
+    assert!(
+        rt.elements()
+            .iter()
+            .any(|e| e.text.as_deref() == Some("No folder"))
+    );
+}
+
+#[test]
+fn a_started_chat_does_not_offer_to_remove_its_folder() {
+    let rt = window(core(crate::fixtures::scene_chat));
+    assert!(!shows(&rt, "/remove-folder"));
 }
 
 #[test]

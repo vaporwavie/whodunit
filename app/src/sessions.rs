@@ -18,6 +18,9 @@ pub struct Summary {
     pub cwd: PathBuf,
     pub title: String,
     pub week: Week,
+    /// When the chat last changed: the file's modified time, or when a live chat without a
+    /// file yet was first listed.
+    pub updated: SystemTime,
 }
 
 impl Summary {
@@ -31,15 +34,27 @@ impl Summary {
     /// The folder, then the size and score once the run has ended and they can show; the role
     /// shows as the row's icon instead.
     pub fn subtitle(&self) -> String {
-        let folder = self
-            .cwd
-            .file_name()
-            .map_or_else(|| self.cwd.to_string_lossy(), |name| name.to_string_lossy())
-            .into_owned();
+        let folder = if crate::config::is_temporary(&self.cwd) {
+            "No folder".to_owned()
+        } else {
+            self.cwd
+                .file_name()
+                .map_or_else(|| self.cwd.to_string_lossy(), |name| name.to_string_lossy())
+                .into_owned()
+        };
         let (Some(deal), Some(done)) = (&self.week.deal, &self.week.done) else {
             return folder;
         };
         format!("{folder} · {} · {}/5", deal.size, done.score)
+    }
+
+    /// The subtitle, then how long ago the chat last changed.
+    pub fn subtitle_at(&self, now: SystemTime) -> String {
+        let ago = match crate::folders::ago(self.updated, now) {
+            ago if ago == "now" => "just now".to_owned(),
+            ago => format!("{ago} ago"),
+        };
+        format!("{} · {ago}", self.subtitle())
     }
 }
 
@@ -67,7 +82,7 @@ pub fn list(root: &Path) -> Vec<Summary> {
     files.sort_by(|a, b| b.0.cmp(&a.0));
     files
         .into_iter()
-        .filter_map(|(_, path)| summarize(&path))
+        .filter_map(|(updated, path)| summarize(&path, updated))
         .filter(|summary| summary.week.deal.is_some())
         .take(SIDEBAR_LIMIT)
         .collect()
@@ -86,7 +101,7 @@ pub fn transcript(path: &Path) -> Option<Transcript> {
     Some(Transcript::from_entries(&entries, Some(leaf)))
 }
 
-fn summarize(path: &Path) -> Option<Summary> {
+fn summarize(path: &Path, updated: SystemTime) -> Option<Summary> {
     let file = fs::File::open(path).ok()?;
     let mut week = Week::default();
     let mut name = None;
@@ -149,6 +164,7 @@ fn summarize(path: &Path) -> Option<Summary> {
         cwd: cwd?,
         title,
         week,
+        updated,
     })
 }
 

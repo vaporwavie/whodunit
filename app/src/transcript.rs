@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const DEAL: &str = "whodunit.deal";
@@ -33,6 +34,19 @@ pub struct Shot {
 impl std::fmt::Debug for Shot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Shot({}, {} bytes)", self.mime, self.bytes.len())
+    }
+}
+
+impl Serialize for Shot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_block().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Shot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let block = Value::deserialize(deserializer)?;
+        Self::from_block(&block).ok_or_else(|| serde::de::Error::custom("invalid prompt image"))
     }
 }
 
@@ -191,7 +205,7 @@ pub fn shots_of(content: &Value) -> Vec<Shot> {
         .unwrap_or_default()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Block {
     Text(String),
     Thinking(String),
@@ -204,7 +218,7 @@ pub enum Block {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FanAnswer {
     pub label: String,
     pub ok: bool,
@@ -212,7 +226,7 @@ pub struct FanAnswer {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Item {
     User {
         text: String,
@@ -249,7 +263,7 @@ impl Item {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ToolRun {
     pub output: String,
     pub is_error: bool,
@@ -258,19 +272,19 @@ pub struct ToolRun {
     pub patch: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Deal {
     pub role: String,
     pub agent: String,
     pub size: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Done {
     pub score: i64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Week {
     pub deal: Option<Deal>,
     pub done: Option<Done>,
@@ -398,7 +412,7 @@ fn fanout_prompt(content: &str) -> Option<String> {
     Some(rest[..end].to_owned())
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Transcript {
     pub items: Vec<Item>,
     pub tools: HashMap<String, ToolRun>,

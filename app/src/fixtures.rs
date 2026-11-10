@@ -1,5 +1,7 @@
 //! Scenes for headless snapshots (`--snap x.png --scene fanout`): fixed transcripts, no pi process.
 
+use std::time::{Duration, SystemTime};
+
 use crate::core::{Command, Core, Dialog, DialogKind, Shared, lock};
 use crate::sessions::Summary;
 use crate::transcript::{Block, Deal, Done, END_TITLE, FanAnswer, Item, Shot, ToolRun, Transcript};
@@ -24,18 +26,21 @@ fn sidebar(core: &mut Core) {
             cwd: crate::config::home().join("Workspace/whodunit"),
             title: "Rename the session store to vault".into(),
             week: core.t.week.clone(),
+            updated: SystemTime::now() - Duration::from_secs(2 * 60),
         },
         Summary {
             path: "/fixture/b.jsonl".into(),
             cwd: crate::config::home().join("Workspace/blog"),
             title: "Draft the launch post".into(),
             week: unrated,
+            updated: SystemTime::now() - Duration::from_secs(3 * 3_600),
         },
         Summary {
             path: "/fixture/c.jsonl".into(),
             cwd: crate::config::home().join("Workspace/uploader"),
             title: "Add retries to the uploader".into(),
             week: rated,
+            updated: SystemTime::now() - Duration::from_secs(2 * 86_400),
         },
     ];
     core.session_file = Some("/fixture/a.jsonl".into());
@@ -91,6 +96,13 @@ pub fn scene_chat(shared: &Shared) {
 /// A new task before the first prompt: the empty body over the composer.
 pub fn scene_empty(shared: &Shared) {
     sidebar(&mut lock(shared));
+}
+
+pub fn scene_folderless(shared: &Shared) {
+    scene_empty(shared);
+    let mut core = lock(shared);
+    core.request_leave(crate::core::Leave::Temporary);
+    core.unstarted.clear();
 }
 
 /// The chat with `/` typed: the slash list over the composer, pi's commands after the app's.

@@ -20,6 +20,63 @@ pub fn sessions_root() -> PathBuf {
     home().join(".pi/agent/sessions")
 }
 
+fn temporary_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let tmp = std::env::temp_dir();
+        tmp.canonicalize().unwrap_or(tmp).join("whodunit-chats")
+    })
+}
+
+pub fn is_temporary(cwd: &Path) -> bool {
+    cwd.parent()
+        .is_some_and(|parent| parent == temporary_root())
+        && cwd
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("chat-"))
+}
+
+/// Owned by the runtime, not the window. History lives elsewhere.
+pub(crate) struct TemporaryWorkspace(PathBuf);
+
+impl TemporaryWorkspace {
+    pub fn new() -> std::io::Result<Self> {
+        let root = temporary_root();
+        std::fs::create_dir_all(root)?;
+        let dir = tempfile::Builder::new().prefix("chat-").tempdir_in(root)?;
+        Ok(Self(dir.keep()))
+    }
+
+    pub fn reopen(path: &Path) -> std::io::Result<Self> {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(path)?;
+        Ok(Self(path.to_owned()))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The UI created this folder; the service will adopt it when the chat starts.
+    pub fn keep(mut self) {
+        self.0.clear();
+    }
+}
+
+impl Drop for TemporaryWorkspace {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 /// pi's per-folder session directory: `--<path with / \ : as ->--`.
 pub fn session_dir(cwd: &Path) -> PathBuf {
     let raw = cwd.to_string_lossy();
@@ -89,7 +146,7 @@ fn merge(base: &mut serde_json::Value, over: serde_json::Value) {
 pub struct AppConfig {
     #[serde(default)]
     pub pi_bin: String,
-    /// Folders pi ran in from the app, newest first, for the folder picker and the next launch.
+    /// Project folders pi ran in from the app, newest first, for the folder picker.
     #[serde(default)]
     pub recent: Vec<RecentDir>,
 }
@@ -116,6 +173,9 @@ impl AppConfig {
     }
 
     pub fn remember(&mut self, path: &Path) {
+        if is_temporary(path) {
+            return;
+        }
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -128,13 +188,6 @@ impl AppConfig {
             },
         );
         self.recent.truncate(RECENT_LIMIT);
-    }
-
-    pub fn last_cwd(&self) -> Option<PathBuf> {
-        self.recent
-            .iter()
-            .map(|r| r.path.clone())
-            .find(|p| p.is_dir())
     }
 
     pub fn save(&self) {
@@ -242,6 +295,9 @@ pub fn roles() -> Vec<(String, bool)> {
 }
 
 pub fn short_path(path: &Path) -> String {
+    if is_temporary(path) {
+        return "No folder".to_owned();
+    }
     let home = home();
     match path.strip_prefix(&home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),

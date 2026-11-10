@@ -38,7 +38,7 @@ pub fn recents(config: &AppConfig) -> Vec<Recent> {
     }
     let mut recents: Vec<Recent> = latest
         .into_iter()
-        .filter(|(path, _)| path.is_dir())
+        .filter(|(path, _)| !config::is_temporary(path) && path.is_dir())
         .map(|(path, at)| Recent { path, at })
         .collect();
     recents.sort_by_key(|r| std::cmp::Reverse(r.at));

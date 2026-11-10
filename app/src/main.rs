@@ -1,6 +1,6 @@
 //! Whodunit: a desktop frontend for the whodunit pi extension (see app/README.md).
 //!
-//! `whodunit` opens the chat window and puts its icon in the menu bar while it runs;
+//! `whodunit` reconnects to live chats (or starts a temporary one) and adds a menu bar icon;
 //! `whodunit -- --cwd <dir>` runs pi in that folder; `whodunit -- --scoreboard` prints the
 //! scoreboard as Markdown and exits. Headless: `--snap out.png --scene fanout`.
 
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use rune::{App, AppSpec, Chrome, WindowSpec};
 
 use whodunit::config::{self, AppConfig};
-use whodunit::core::{Core, Leave, Shared, lock};
+use whodunit::core::{Core, Shared};
 use whodunit::ui::window::{self, Window};
 use whodunit::{fixtures, menu_bar, scoreboard};
 
@@ -36,6 +36,21 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 }
 
 fn main() {
+    // Service modes must not launch AppKit, initialize a GPU, or register a menu bar icon.
+    if std::env::args().any(|arg| arg == "--background-service") {
+        if let Err(error) = whodunit::service::run() {
+            eprintln!("whodunit service: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--service-stop") {
+        if let Err(error) = whodunit::service::stop() {
+            eprintln!("whodunit service: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     rune_mac::launch();
     rune::set_app_id("whodunit");
     rune::prewarm_gpu();
@@ -55,16 +70,16 @@ fn main() {
     } else {
         AppConfig::load()
     };
-    let cwd = flag_value(&args, "--cwd")
-        .map(PathBuf::from)
-        .or_else(|| config.last_cwd())
-        .unwrap_or_else(config::home);
-    let shared: Shared = Arc::new(Mutex::new(Core::new(config, cwd)));
+    let cwd = flag_value(args, "--cwd").map(PathBuf::from);
+    let initial_cwd = cwd.clone().unwrap_or_else(config::home);
+    let core = if headless {
+        Core::new(config, initial_cwd)
+    } else {
+        Core::background(config, initial_cwd)
+    };
+    let shared: Shared = Arc::new(Mutex::new(core));
     if !headless {
-        let mut core = lock(&shared);
-        core.refresh_sessions();
-        core.request_leave(Leave::New);
-        drop(core);
+        whodunit::core::prepare_background(&shared, cwd);
         let shared = shared.clone();
         std::thread::spawn(move || whodunit::core::start_unstarted(&shared));
     }

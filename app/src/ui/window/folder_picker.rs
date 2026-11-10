@@ -80,9 +80,13 @@ impl FolderPicker {
     /// Browses the current folder's parent, so its siblings (the other projects) are one key away.
     pub fn show(config: &AppConfig, cwd: &Path, wakers: Wakers) -> FolderPicker {
         let home = config::home();
-        let dir = match cwd.parent() {
-            Some(parent) if cwd != home => parent.to_owned(),
-            _ => cwd.to_owned(),
+        let dir = if config::is_temporary(cwd) {
+            home
+        } else {
+            match cwd.parent() {
+                Some(parent) if cwd != home => parent.to_owned(),
+                _ => cwd.to_owned(),
+            }
         };
         let mut picker = FolderPicker::with(dir.clone(), Vec::new(), Vec::new(), SystemTime::now());
         picker.wakers = wakers;

@@ -7,6 +7,7 @@ pub mod folders;
 pub mod menu_bar;
 pub mod pi;
 pub mod scoreboard;
+pub mod service;
 pub mod sessions;
 pub mod sprites;
 pub mod transcript;

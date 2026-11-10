@@ -1,4 +1,4 @@
-//! One `pi --mode rpc` child: JSONL commands on stdin, records on stdout, split on LF only.
+//! A pi connection: a child owned by the service, or a socket owned by the UI.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
@@ -8,7 +8,12 @@ use std::thread;
 
 use serde_json::Value;
 
-pub struct Pi {
+pub enum Pi {
+    Child(ChildPi),
+    Remote(crate::service::Connection),
+}
+
+pub struct ChildPi {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     child: Option<Child>,
 }
@@ -55,7 +60,7 @@ impl Pi {
             while reader.read_until(b'\n', &mut buf).unwrap_or(0) > 0 {
                 if let Ok(mut t) = stderr_tail.lock() {
                     t.push_str(&String::from_utf8_lossy(&buf));
-                    let keep = t.len().saturating_sub(4000);
+                    let keep = t.ceil_char_boundary(t.len().saturating_sub(4000));
                     t.drain(..keep);
                 }
                 buf.clear();
@@ -86,13 +91,33 @@ impl Pi {
             on_exit(last);
         });
 
-        Ok(Pi {
+        Ok(Pi::Child(ChildPi {
             stdin,
             child: Some(child),
-        })
+        }))
+    }
+
+    /// A stalled input hook cannot be stopped with RPC abort.
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Child(pi) => match &mut pi.child {
+                Some(child) => child.kill(),
+                None => Ok(()),
+            },
+            Self::Remote(connection) => connection.kill(),
+        }
     }
 
     pub fn send(&self, record: &Value) -> bool {
+        match self {
+            Self::Child(pi) => pi.send(record),
+            Self::Remote(connection) => connection.send(record).is_ok(),
+        }
+    }
+}
+
+impl ChildPi {
+    fn send(&self, record: &Value) -> bool {
         let Ok(mut guard) = self.stdin.lock() else {
             return false;
         };
@@ -105,7 +130,7 @@ impl Pi {
     }
 }
 
-impl Drop for Pi {
+impl Drop for ChildPi {
     /// Closing stdin asks pi for an orderly shutdown; a child still running after that is killed.
     fn drop(&mut self) {
         if let Ok(mut guard) = self.stdin.lock() {

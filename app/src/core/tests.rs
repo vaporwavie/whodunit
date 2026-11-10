@@ -6,6 +6,64 @@ fn core() -> Core {
 }
 
 #[test]
+fn folderless_chats_have_isolated_workspaces_until_the_app_exits() {
+    let mut core = core();
+    core.request_leave(Leave::Temporary);
+    let first = core.cwd.clone();
+    assert!(config::is_temporary(&first));
+    assert!(first.is_dir());
+    assert_eq!(config::short_path(&first), "No folder");
+    std::fs::write(first.join("scratch.txt"), "keep while switching").unwrap();
+    core.config.remember(&first);
+    assert!(core.config.recent.is_empty());
+
+    core.request_leave(Leave::New);
+    let second = core.cwd.clone();
+    assert_ne!(first, second);
+    assert!(second.is_dir());
+    assert!(!second.join("scratch.txt").exists());
+    assert!(first.join("scratch.txt").exists());
+
+    core.request_leave(Leave::NewIn("/project".into()));
+    core.request_leave(Leave::New);
+    assert_eq!(core.cwd, Path::new("/project"));
+    assert!(first.is_dir() && second.is_dir());
+    drop(core);
+    assert!(!first.exists() && !second.exists());
+    assert!(!config::is_temporary(Path::new("/project")));
+}
+
+#[test]
+fn saved_folderless_chats_recreate_their_workspace_without_deleting_history() {
+    let mut original = core();
+    original.request_leave(Leave::Temporary);
+    let cwd = original.cwd.clone();
+    std::fs::write(cwd.join("scratch.txt"), "disposable").unwrap();
+    let history = tempfile::NamedTempFile::new().unwrap();
+    let summary = Summary {
+        path: history.path().to_owned(),
+        cwd: cwd.clone(),
+        title: "A saved chat".into(),
+        week: Default::default(),
+        updated: std::time::SystemTime::now(),
+    };
+    assert_eq!(summary.subtitle(), "No folder");
+    drop(original);
+    assert!(!cwd.exists());
+
+    let mut reopened = core();
+    reopened.sessions.push(summary);
+    reopened.request_leave(Leave::Open(history.path().to_owned()));
+    assert_eq!(reopened.cwd, cwd);
+    assert!(cwd.is_dir());
+    assert!(!cwd.join("scratch.txt").exists());
+    assert!(reopened.exited.is_none());
+    drop(reopened);
+    assert!(!cwd.exists());
+    assert!(history.path().exists());
+}
+
+#[test]
 fn the_welcome_does_not_return_between_dealing_and_the_first_message() {
     use crate::ui::window::{self, Window};
     use rune::{Env, Runtime};

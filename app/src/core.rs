@@ -1,17 +1,21 @@
-//! Shared app state and one independent pi process per live chat.
-//! Reader threads route records to their own task, even while another chat is selected.
+//! Chat state shared by the UI and the background service's RPC reducers.
+//! The UI owns socket connections; only the service owns pi processes.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::{self, AppConfig};
 use crate::pi::{Pi, Spawn};
 use crate::sessions::{self, Summary};
 use crate::transcript::{END_TITLE, Item, Shot, Transcript, str_of};
+
+mod service;
+pub use service::{connect_background, prepare_background};
 
 #[cfg(test)]
 mod tests;
@@ -33,7 +37,7 @@ pub fn lock(shared: &Shared) -> MutexGuard<'_, Core> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DialogKind {
     Select(Vec<String>),
     Confirm(String),
@@ -45,7 +49,7 @@ pub enum DialogKind {
 }
 
 /// A pi extension dialog (`extension_ui_request`), answered with `extension_ui_response`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Dialog {
     pub id: String,
     pub title: String,
@@ -75,6 +79,8 @@ pub fn score_key(option: &str) -> Option<(&str, &str)> {
 #[derive(Clone, Debug)]
 pub enum Leave {
     New,
+    /// A new chat with its own disposable workspace, rather than a project folder.
+    Temporary,
     /// A new task in another folder.
     NewIn(PathBuf),
     Open(PathBuf),
@@ -87,7 +93,7 @@ pub struct Toast {
     pub until: Instant,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Stats {
     pub cost: f64,
     /// Tokens in the context pi sends, counted as pi counts them for compaction.
@@ -115,27 +121,54 @@ impl Stats {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Command {
     pub name: String,
     pub description: String,
 }
 
+#[derive(Serialize, Deserialize)]
 enum Pending {
     State,
     Entries,
     Stats,
     Commands,
-    Generic(&'static str),
+    Prompt,
+    Bash,
+    Compact,
+    ClearQueue,
+    Export,
+    Other,
 }
 
-#[derive(Default)]
+impl Pending {
+    fn of(record: &Value) -> Self {
+        match record["type"].as_str().unwrap_or_default() {
+            "get_state" => Self::State,
+            "get_entries" => Self::Entries,
+            "get_session_stats" => Self::Stats,
+            "get_commands" => Self::Commands,
+            "prompt" => Self::Prompt,
+            "bash" => Self::Bash,
+            "compact" => Self::Compact,
+            "clear_queue" => Self::ClearQueue,
+            "export_html" => Self::Export,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 pub struct Task {
     pub cwd: PathBuf,
+    #[serde(skip)]
     pi: Option<Pi>,
     /// Records sent before the chat's process started, for it to read first.
+    #[serde(skip)]
     outbox: Vec<Value>,
     generation: u64,
+    /// Identity in the background service, including before pi has a session file.
+    pub(crate) service_id: Option<u64>,
     pending: HashMap<String, Pending>,
     pub t: Transcript,
     pub session_file: Option<String>,
@@ -147,10 +180,12 @@ pub struct Task {
     /// The images sent with `pending_prompt`, shown with it until pi echoes the message.
     pub pending_shots: Vec<Shot>,
     /// When the first prompt went out, so the deck gets a full deal before it gives way.
+    #[serde(with = "crate::service::elapsed")]
     pub dealing_since: Option<Instant>,
     pub queue: (Vec<String>, Vec<String>),
     pub stats: Stats,
     pub dialog: Option<Dialog>,
+    #[serde(skip)]
     pub toasts: Vec<Toast>,
     pub statuses: BTreeMap<String, String>,
     pub widgets: BTreeMap<String, Vec<String>>,
@@ -163,10 +198,33 @@ pub struct Task {
 }
 
 impl Task {
+    pub(crate) fn path(&self) -> Option<PathBuf> {
+        self.session_file
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| self.service_id.map(crate::service::live_path))
+    }
+
     /// Records waiting for the chat's process to start, for tests that never start one.
     #[cfg(test)]
     pub(crate) fn sent_before_start(&self) -> &[Value] {
         &self.outbox
+    }
+
+    /// Classification runs in the extension's input hook, before pi starts streaming.
+    /// Fan-outs and role dialogs have their own UI and aren't cancelled by resetting a deal.
+    pub fn dealing(&self) -> bool {
+        self.pending_prompt.is_some()
+            && self.t.week.deal.is_none()
+            && self.t.week.done.is_none()
+            && !self.streaming
+            && self.dialog.is_none()
+            && self.widgets.is_empty()
+            && self.exited.is_none()
+    }
+
+    pub fn can_stop(&self) -> bool {
+        self.streaming || self.dealing()
     }
 
     pub fn working(&self) -> bool {
@@ -177,14 +235,10 @@ impl Task {
                 || self.pending_prompt.is_some()
                 || !self.widgets.is_empty()
                 || !self.statuses.is_empty()
-                || self.pending.values().any(|p| {
-                    matches!(
-                        p,
-                        Pending::Generic("prompt")
-                            | Pending::Generic("bash")
-                            | Pending::Generic("compact")
-                    )
-                }))
+                || self
+                    .pending
+                    .values()
+                    .any(|p| matches!(p, Pending::Prompt | Pending::Bash | Pending::Compact)))
     }
 }
 
@@ -201,6 +255,10 @@ pub struct Core {
     pub version: u64,
     task: Task,
     tasks: HashMap<u64, Task>,
+    // Only direct runtimes own workspace cleanup; the UI hands ownership to the service.
+    temporary_workspaces: Vec<config::TemporaryWorkspace>,
+    background: bool,
+    pub(crate) subscribers: Vec<crate::service::Subscriber>,
     next_generation: u64,
     next_id: u64,
     wakers: Vec<Arc<dyn Fn() + Send + Sync>>,
@@ -242,6 +300,9 @@ impl Core {
                 ..Task::default()
             },
             tasks: HashMap::new(),
+            temporary_workspaces: Vec::new(),
+            background: false,
+            subscribers: Vec::new(),
             next_generation: 0,
             next_id: 0,
             wakers: Vec::new(),
@@ -249,6 +310,16 @@ impl Core {
             sessions: Vec::new(),
             unstarted: Vec::new(),
         }
+    }
+
+    pub fn background(config: AppConfig, cwd: PathBuf) -> Core {
+        let mut core = Self::new(config, cwd);
+        core.background = true;
+        core.next_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        core
     }
 
     pub fn add_waker(&mut self, waker: Arc<dyn Fn() + Send + Sync>) {
@@ -287,14 +358,27 @@ impl Core {
     }
 
     fn send(&mut self, mut record: Value, pending: Option<Pending>) -> bool {
+        // The service asks pi for state once, then shares the responses with every UI.
+        if self.background
+            && record["type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("get_"))
+        {
+            return true;
+        }
         self.next_id += 1;
-        let id = format!("app-{}", self.next_id);
+        let id = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            self.generation,
+            self.next_id
+        );
         record["id"] = json!(id);
         let sent = match &self.pi {
             Some(pi) => pi.send(&record),
             // Shown before its process started: it reads these once it has.
             None if self.exited.is_none() => {
-                self.outbox.push(record);
+                self.outbox.push(record.clone());
                 true
             }
             None => false,
@@ -303,6 +387,7 @@ impl Core {
             if let Some(pending) = pending {
                 self.pending.insert(id, pending);
             }
+            self.publish(crate::service::Event::Sent(record));
         } else {
             self.pending_prompt = None;
             self.toast(
@@ -323,19 +408,23 @@ impl Core {
 
     fn sync_live_sessions(&mut self) {
         for task in self.tasks.values().chain(std::iter::once(&self.task)) {
-            let Some(file) = &task.session_file else {
+            let Some(path) = task.path() else {
                 continue;
             };
             let Some(title) = task.t.title().or_else(|| task.pending_prompt.clone()) else {
                 continue;
             };
+            let existing = self.sessions.iter_mut().find(|s| s.path == path);
             let summary = Summary {
-                path: PathBuf::from(file),
+                updated: existing
+                    .as_ref()
+                    .map_or_else(std::time::SystemTime::now, |s| s.updated),
+                path,
                 cwd: task.cwd.clone(),
                 title,
                 week: task.t.week.clone(),
             };
-            if let Some(existing) = self.sessions.iter_mut().find(|s| s.path == summary.path) {
+            if let Some(existing) = existing {
                 *existing = summary;
             } else {
                 self.sessions.insert(0, summary);
@@ -352,11 +441,7 @@ impl Core {
         self.tasks
             .values()
             .chain(std::iter::once(&self.task))
-            .find(|t| {
-                t.session_file
-                    .as_deref()
-                    .is_some_and(|f| Path::new(f) == path)
-            })
+            .find(|t| t.path().as_deref() == Some(path))
     }
 
     pub fn session_state(&self, summary: &Summary) -> SessionState {
@@ -378,7 +463,7 @@ impl Core {
 
     fn park_task(&mut self, task: Task) {
         if task.generation != 0
-            && ((!task.ready && task.session_file.is_some())
+            && ((!task.ready && (task.session_file.is_some() || task.service_id.is_some()))
                 || task.working()
                 || task.t.week.deal.is_some()
                 || !task.t.items.is_empty()
@@ -453,7 +538,7 @@ impl Core {
             });
             self.send(
                 json!({"type": "bash", "command": command, "excludeFromContext": exclude}),
-                Some(Pending::Generic("bash")),
+                Some(Pending::Bash),
             );
             self.touch();
             return false;
@@ -474,21 +559,18 @@ impl Core {
                     if !args.trim().is_empty() {
                         record["customInstructions"] = json!(args.trim());
                     }
-                    self.send(record, Some(Pending::Generic("compact")));
+                    self.send(record, Some(Pending::Compact));
                     return false;
                 }
                 "name" => {
                     self.send(
                         json!({"type": "set_session_name", "name": args.trim()}),
-                        Some(Pending::Generic("name")),
+                        Some(Pending::Other),
                     );
                     return false;
                 }
                 "export" => {
-                    self.send(
-                        json!({"type": "export_html"}),
-                        Some(Pending::Generic("export_html")),
-                    );
+                    self.send(json!({"type": "export_html"}), Some(Pending::Export));
                     return false;
                 }
                 "model" | "models" | "scoped-models" => {
@@ -520,7 +602,7 @@ impl Core {
         if self.streaming {
             record["streamingBehavior"] = json!(if follow_up { "followUp" } else { "steer" });
         }
-        let sent = self.send(record, Some(Pending::Generic("prompt")));
+        let sent = self.send(record, Some(Pending::Prompt));
         self.sync_live_sessions();
         self.touch();
         sent && !shots.is_empty()
@@ -540,8 +622,39 @@ impl Core {
         }
         self.send(
             json!({"type": "prompt", "message": "/done"}),
-            Some(Pending::Generic("prompt")),
+            Some(Pending::Prompt),
         );
+    }
+
+    /// pi's abort doesn't interrupt an input hook. Stop that process, discard its generation
+    /// so late records can't land, and return the first prompt for the composer to restore.
+    pub fn cancel_deal(&mut self) -> Option<(String, Vec<Shot>)> {
+        if !self.dealing() {
+            return None;
+        }
+        if let Some(pi) = &mut self.pi
+            && let Err(error) = pi.kill()
+        {
+            self.toast(format!("Couldn’t stop dealing: {error}"), "error");
+            return None;
+        }
+        let prompt = self.pending_prompt.take()?;
+        let shots = std::mem::take(&mut self.pending_shots);
+        let old_generation = self.generation;
+        let old_session = self.task.path();
+        self.next_generation += 1;
+        self.task = Task {
+            cwd: self.cwd.clone(),
+            generation: self.next_generation,
+            ..Task::default()
+        };
+        self.unstarted.retain(|g| *g != old_generation);
+        self.unstarted.push(self.generation);
+        if let Some(file) = old_session {
+            self.sessions.retain(|s| s.path != Path::new(&file));
+        }
+        self.toast("Dealing stopped. Your prompt is ready to retry.", "info");
+        Some((prompt, shots))
     }
 
     /// Esc while working: take back the queue, then abort.
@@ -549,11 +662,8 @@ impl Core {
         if !self.streaming {
             return;
         }
-        self.send(
-            json!({"type": "clear_queue"}),
-            Some(Pending::Generic("clear_queue")),
-        );
-        self.send(json!({"type": "abort"}), Some(Pending::Generic("abort")));
+        self.send(json!({"type": "clear_queue"}), Some(Pending::ClearQueue));
+        self.send(json!({"type": "abort"}), Some(Pending::Other));
     }
 
     /// Selects the chat now, so the window draws it in the frame that asked: a live chat as it
@@ -561,6 +671,18 @@ impl Core {
     /// `unstarted`.
     pub fn request_leave(&mut self, leave: Leave) {
         let (cwd, session) = match leave {
+            Leave::Temporary => {
+                let Some(cwd) = self.new_temporary_workspace() else {
+                    return;
+                };
+                (cwd, None)
+            }
+            Leave::New if config::is_temporary(&self.cwd) => {
+                let Some(cwd) = self.new_temporary_workspace() else {
+                    return;
+                };
+                (cwd, None)
+            }
             Leave::New => (self.cwd.clone(), None),
             Leave::NewIn(cwd) => (cwd, None),
             Leave::Open(path) => {
@@ -580,6 +702,21 @@ impl Core {
                 (cwd, Some(path))
             }
         };
+        if !self.background
+            && config::is_temporary(&cwd)
+            && !self.temporary_workspaces.iter().any(|w| w.path() == cwd)
+        {
+            match config::TemporaryWorkspace::reopen(&cwd) {
+                Ok(workspace) => self.temporary_workspaces.push(workspace),
+                Err(error) => {
+                    self.toast(
+                        format!("Couldn’t restore temporary workspace: {error}"),
+                        "error",
+                    );
+                    return;
+                }
+            }
+        }
         let t = session
             .as_deref()
             .and_then(sessions::transcript)
@@ -587,6 +724,27 @@ impl Core {
         let generation = self.open_task(cwd, session.as_deref(), t);
         self.unstarted.push(generation);
         self.touch();
+    }
+
+    fn new_temporary_workspace(&mut self) -> Option<PathBuf> {
+        match config::TemporaryWorkspace::new() {
+            Ok(workspace) => {
+                let cwd = workspace.path().to_owned();
+                if self.background {
+                    workspace.keep();
+                } else {
+                    self.temporary_workspaces.push(workspace);
+                }
+                Some(cwd)
+            }
+            Err(error) => {
+                self.toast(
+                    format!("Couldn’t create temporary workspace: {error}"),
+                    "error",
+                );
+                None
+            }
+        }
     }
 
     pub fn answer_dialog(&mut self, answer: Option<Value>) {
@@ -845,6 +1003,7 @@ impl Core {
             _ => return,
         }
         self.touch();
+        self.publish(crate::service::Event::Record(record));
     }
 
     fn on_ui_request(&mut self, record: &Value) {
@@ -936,7 +1095,7 @@ impl Core {
         let data = record.get("data").cloned().unwrap_or(Value::Null);
         if !ok {
             let error = str_of(record, "error");
-            if let Pending::Generic("prompt") = pending {
+            if let Pending::Prompt = pending {
                 self.pending_prompt = None;
             }
             self.toast(format!("{}: {error}", str_of(record, "command")), "error");
@@ -1002,7 +1161,7 @@ impl Core {
                     })
                     .collect();
             }
-            Pending::Generic("clear_queue") => {
+            Pending::ClearQueue => {
                 let mut restored: Vec<String> = Vec::new();
                 for key in ["steering", "followUp"] {
                     if let Some(list) = data.get(key).and_then(Value::as_array) {
@@ -1014,7 +1173,7 @@ impl Core {
                     self.editor_text = Some((generation, restored.join("\n")));
                 }
             }
-            Pending::Generic("bash") => {
+            Pending::Bash => {
                 if let Some(Item::Bash {
                     output,
                     exit_code,
@@ -1034,11 +1193,11 @@ impl Core {
                 // A `!` command's output joins the context.
                 self.refresh_stats();
             }
-            Pending::Generic("export_html") => {
+            Pending::Export => {
                 let path = str_of(&data, "path");
                 self.toast(format!("Exported to {path}"), "info");
             }
-            Pending::Generic(_) => {}
+            Pending::Prompt | Pending::Compact | Pending::Other => {}
         }
         self.touch();
     }
@@ -1084,6 +1243,9 @@ pub fn start_unstarted(shared: &Shared) {
 
 /// Starts an independent pi process for a chat `request_leave` selected, wherever it is now.
 fn start_pi(shared: &Shared, generation: u64) {
+    if lock(shared).background {
+        return service::start_remote(shared, generation);
+    }
     let login = crate::config::login_env();
     let mut core = lock(shared);
     // A new task left before its process started is gone, and needs none.
@@ -1091,7 +1253,7 @@ fn start_pi(shared: &Shared, generation: u64) {
         .tasks
         .values()
         .chain(std::iter::once(&core.task))
-        .find(|t| t.generation == generation)
+        .find(|t| t.generation == generation && t.exited.is_none())
         .map(|t| (t.cwd.clone(), t.session_file.clone()))
     else {
         return;
@@ -1136,13 +1298,7 @@ fn start_pi(shared: &Shared, generation: u64) {
             let wakers = {
                 let mut core = lock(&shared);
                 core.for_task(generation, |core| {
-                    core.pi = None;
-                    core.streaming = false;
-                    core.turn_started = None;
-                    core.pending_prompt = None;
-                    let tail: Vec<&str> = stderr.lines().rev().take(6).collect();
-                    core.exited = Some(tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
-                    core.touch();
+                    core.process_exit(stderr);
                 });
                 core.wakers()
             };
@@ -1163,8 +1319,7 @@ fn start_pi(shared: &Shared, generation: u64) {
         }
         Err(error) => {
             core.outbox.clear();
-            core.pending_prompt = None;
-            core.exited = Some(format!("Couldn’t start {spec_bin}: {error}"));
+            core.process_exit(format!("Couldn’t start {spec_bin}: {error}"));
         }
     });
     core.touch();

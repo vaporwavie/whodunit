@@ -107,6 +107,50 @@ fn app(root: &Path) -> Shared {
 }
 
 #[test]
+fn folderless_chats_run_pi_and_resume_after_the_workspace_is_removed() {
+    isolated(
+        "folderless_chats_run_pi_and_resume_after_the_workspace_is_removed",
+        |root| {
+            let shared = app(root);
+            navigate(&shared, Leave::Temporary);
+            let cwd = lock(&shared).cwd.clone();
+            lock(&shared).submit("temporary chat", false);
+            wait(&shared, |core| core.streaming && core.t.week.deal.is_some());
+            let session = PathBuf::from(lock(&shared).session_file.clone().unwrap());
+            let header: serde_json::Value = serde_json::from_str(
+                std::fs::read_to_string(&session)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(Path::new(header["cwd"].as_str().unwrap()), cwd);
+            std::fs::write(session.with_extension("release"), "").unwrap();
+            wait(&shared, |core| {
+                !core.streaming && answer(core) == "temporary chat"
+            });
+            assert!(lock(&shared).config.recent.is_empty());
+            assert!(whodunit::folders::recents(&lock(&shared).config).is_empty());
+            std::fs::write(cwd.join("scratch.txt"), "disposable").unwrap();
+            drop(shared);
+            assert!(!cwd.exists());
+            assert!(session.exists());
+
+            let reopened = app(root);
+            lock(&reopened).refresh_sessions();
+            navigate(&reopened, Leave::Open(session));
+            assert_eq!(lock(&reopened).cwd, cwd);
+            assert!(cwd.is_dir());
+            assert!(!cwd.join("scratch.txt").exists());
+            assert_eq!(answer(&lock(&reopened)), "temporary chat");
+            drop(reopened);
+            assert!(!cwd.exists());
+        },
+    );
+}
+
+#[test]
 fn chats_keep_working_independently() {
     isolated("chats_keep_working_independently", run_chats);
 }

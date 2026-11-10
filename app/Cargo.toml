@@ -11,12 +11,14 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
+libc = "0.2"
 rune = { git = "https://github.com/vaporwavie/rune", rev = "d25fc659ef34905d59f4235f625cc6e6dd7813db" }
-rune-kit = { git = "https://github.com/vaporwavie/rune", rev = "d25fc659ef34905d59f4235f625cc6e6dd7813db", features = ["markdown"] }
+rune-kit = { git = "https://github.com/vaporwavie/rune", rev = "d25fc659ef34905d59f4235f625cc6e6dd7813db", features = ["markdown", "mermaid"] }
 rune-theme-opencode = { git = "https://github.com/vaporwavie/rune", rev = "d25fc659ef34905d59f4235f625cc6e6dd7813db" }
 rune-mac = { git = "https://github.com/vaporwavie/rune", rev = "d25fc659ef34905d59f4235f625cc6e6dd7813db" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3"
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

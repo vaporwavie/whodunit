@@ -6,7 +6,9 @@ On top of plain pi it adds parallel task chats, a sidebar of sessions, a scorebo
 
 ## Multiple tasks
 
-One task belongs to one chat, but you can work on several tasks at once. ⌘N starts another chat without stopping the others or asking you to score them. Each live chat has its own pi process, folder, transcript, queue and dialogs. Switching back restores that chat, including any unsent draft. Chats in the same folder share files; use separate worktrees if the tasks need isolated edits.
+You can start chatting without choosing a folder. A normal launch reconnects to the background service's live chats, or opens a **No folder** chat in its own temporary workspace when there are none. Quitting the app leaves that workspace and its work running. The service removes temporary workspaces after their chats have ended and disconnected, or when you explicitly stop the service. Chat history and scores are saved separately. Reopening a chat whose workspace was removed recreates the folder, not its files. Pick a project folder with ⌘O, or pass `--cwd`, when the work needs to stay on disk.
+
+One task belongs to one chat, but you can work on several tasks at once. ⌘N starts another chat without stopping the others or asking you to score them. Each live chat has its own pi process, folder, transcript, queue and dialogs. Switching back restores that chat, including any unsent draft. In a folderless chat, ⌘N gives the next chat a separate temporary workspace. In a project chat, it keeps the same folder. Chats in the same folder share files; use separate worktrees if the tasks need isolated edits.
 
 The sidebar lists chats from every folder in three groups:
 
@@ -14,13 +16,41 @@ The sidebar lists chats from every folder in three groups:
 - **Idle**: the chat is open but isn't working. It may be waiting for your reply, a role or fan-out pick, or a score. A dot marks chats waiting on a dialog. Saved open chats from earlier launches also appear here.
 - **Ended**: you've scored the run and sealed the chat. This section stays at the bottom of the sidebar and starts collapsed; click its heading to show or hide ended chats. Expanded history scrolls separately from open chats.
 
-Each row shows its folder, with the size and score added only after the run ends. An ended row also shows its role's icon before the title and its agent's icon at the end; rest the pointer on either to see its name. Opening a saved chat starts pi in that chat's folder; live chats keep their existing process. Changing folders starts a new chat and leaves other tasks running. Quit the app to stop all its pi processes; chats resume from their saved history, not mid-turn.
+Each row shows its folder, with the size and score added only after the run ends. An ended row also shows its role's icon before the title and its agent's icon at the end; rest the pointer on either to see its name. Opening a saved chat starts pi in that chat's folder; live chats reconnect to their existing process. Changing folders starts a new chat and leaves other tasks running. **Quitting or crashing the app does not stop work.** The background service owns each pi process and keeps reading its output with no window connected. Reopening restores live chats, including partial answers, queued messages, fan-out progress and unanswered dialogs. An explicit `--cwd` opens a new chat in that folder while reconnecting the others.
 
 Code snippets have a **Copy** button that copies just the code, without Markdown fences. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
 Edits and writes show as diffs. Dot art carries the working state; a status line over the composer appears only for dealing, fan-out progress, retries and compaction. Thinking stays hidden until the run ends, since a trace's style names the lab: while the agent thinks, three thick bands of dithered redaction write themselves, with broad runs and irregular breaks. A finished thought keeps two still bands with a shorter last line, the same size whatever the trace's length. When thinking replaces the scanner, its strip opens into those lines over 280 ms without restarting the sweep. The handoff pauses while unfocused and is skipped with Reduce Motion or when opening an existing chat. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
 
 The ring next to Send shows how close the chat is to compaction. At 100%, pi compacts on its own: that's the model's window minus `compaction.reserveTokens` from pi's settings (the `whodunit/auto` override wins if you set one). It updates after every response and every batch of tool results, not only when the turn ends. Right after a compaction, pi has no count until the next response, so the ring shows the compaction's own estimate of what it kept, marked `~`. With auto-compaction off, it shows the share of the whole window.
+
+## Background service
+
+The app starts one local service per HOME on demand. It uses the same executable, with no separate install or launch-at-login job. The app talks to it over a Unix socket in a private, user-owned directory under `/tmp`; it does not listen on a network port. API keys stay in process memory, not in service files.
+
+Quit closes the UI connection only. Agents can keep editing files and making paid model calls while the app is closed. Use **Stop** or Esc in a chat to abort that chat. To stop the service and all its pi processes explicitly:
+
+```sh
+# Development build
+app/target/release/whodunit --service-stop
+
+# Installed macOS app
+~/Applications/Whodunit.app/Contents/MacOS/whodunit --service-stop
+
+# Installed Linux app
+whodunit --service-stop
+```
+
+The next app launch starts a new service. This protects work from UI exits and crashes, not from a pi crash, a service crash, logout or reboot. After those, open the saved chat to continue from its history; the app never automatically resends an interrupted prompt. Unsent composer drafts still belong to the UI and do not survive quitting.
+
+The service keeps the code it started with. After updating the app, let running tasks finish and stop the service to use the new build. Ended chats with saved history are released within a minute after their clients disconnect; open, unscored chats stay available for reconnection.
+
+Offline service tests use the built executable and a fake pi peer, with no model calls:
+
+```sh
+cd app
+cargo test --test background_service
+```
 
 ## Images
 
@@ -37,7 +67,7 @@ cd app
 scripts/bundle.sh    # installs ~/Applications/Whodunit.app (macOS) or ~/.local/bin + a desktop entry (Linux)
 ```
 
-Launched from Finder, the app runs your login shell once to find `pi` and your API keys. They stay in memory and are never written to disk.
+Launched from Finder, the background service runs your login shell once to find `pi` and your API keys. They stay in memory and are never written to disk. Restart the service after changing that environment.
 
 ## Ending a run
 
@@ -60,9 +90,9 @@ While the contenders work, each gets a slim lane where its answer will land: its
 
 ## Folder picker
 
-⌘O, or the folder button on a new task's composer, opens the folder picker.
+⌘O, or the folder button on a new task's composer, opens the folder picker. Click **×** beside the selected folder to return to **No folder** in a fresh temporary workspace. Your unsent text and attachments stay in the composer; other chats keep working.
 
-The top list is recent folders, newest first: the ones you opened here and the ones plain pi ran in. The folder pi runs in now isn't listed, since ⌘N already starts a new task there. Below the recents is the current folder's parent, so your other projects are one ↓ away.
+The top list is recent folders, newest first: the ones you opened here and the ones plain pi ran in. The folder pi runs in now isn't listed, since ⌘N already starts a new task there. Below the recents is the current folder's parent, so your other projects are one ↓ away. From a folderless chat, browsing starts at your home folder. Temporary workspaces don't appear in recents.
 
 ⏎ works one level at a time. When the picker opens nothing is selected, and ⏎ runs pi in the folder it's browsing. ⏎ on a subfolder, or on Go up, opens that folder with its first subfolder selected, so ⏎ keeps going down, or Go up when it has none. Recent folders skip the step and run pi on the first ⏎.
 
@@ -89,6 +119,7 @@ On Linux, read ⌘ as Ctrl.
 ## Command line
 
 ```sh
+whodunit                       # reconnect, or chat in a temporary workspace
 whodunit -- --cwd ~/some/dir    # run pi in that folder
 whodunit -- --scoreboard        # print the scoreboard as Markdown and exit
 ```

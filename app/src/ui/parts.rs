@@ -42,10 +42,6 @@ pub trait HasCore: 'static {
     fn stage_motion(&self) -> Motion {
         Motion::Live
     }
-    /// How far the scanner has resolved into the live thought; one is settled.
-    fn thinking_merge(&self) -> f32 {
-        1.0
-    }
     /// Seconds since a fan-out lane last changed state.
     fn lane_age(&self, _label: &str) -> f32 {
         stage::SETTLED
@@ -753,8 +749,7 @@ fn assistant_view<S: HasCore>(
                         column = column.child(thinking_block(body, k, think_key));
                     }
                 } else if streaming && latest == Some(index) {
-                    let thought =
-                        stage::thinking(s.stage_motion(), s.thinking_merge(), k).key(think_key);
+                    let thought = stage::thinking(s.stage_motion(), k).key(think_key);
                     let follows_content =
                         blocks[..index].iter().flatten().any(|block| match block {
                             Block::Text(body) | Block::Thinking(body) => !body.is_empty(),
@@ -781,9 +776,7 @@ fn assistant_view<S: HasCore>(
     }
     let dealing = matches!(Stage::of(core), Some(Stage::Dealing { .. }));
     if streaming && latest.is_none() && !dealing {
-        column = column.child(
-            stage::thinking(s.stage_motion(), s.thinking_merge(), k).key(format!("{key}-think0")),
-        );
+        column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think0")));
     }
     if let Some(error) = error {
         let shown = if core.reveal().is_some() {
@@ -968,7 +961,7 @@ fn item_view<S: HasCore>(s: &S, core: &Core, item: &Item, key: &str, k: &Kit) ->
 pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
     let count = core.t.items.len()
         + usize::from(core.pending_prompt.is_some())
-        + usize::from(Stage::of(core).is_some_and(|stage| stage.shows()));
+        + usize::from(Stage::of(core).is_some());
     let session = session_tag(core);
     // One selection over the whole chat, as on a web page: a drag runs from the prompt through
     // the answer and its tool output, and Cmd+A takes every row, built or not.
@@ -985,7 +978,7 @@ pub fn transcript<S: HasCore>(core: &Core, k: &'static Kit, max_w: f32) -> El {
             move |s: &S, i| {
                 let core = lock(s.core());
                 let messages = core.t.items.len() + usize::from(core.pending_prompt.is_some());
-                let stage = Stage::of(&core).filter(Stage::shows);
+                let stage = Stage::of(&core);
                 let last = i + 1 == messages + usize::from(stage.is_some());
                 let body = match (core.t.items.get(i), &core.pending_prompt) {
                     (Some(item), _) => item_view::<S>(s, &core, item, &format!("item-{i}"), k),

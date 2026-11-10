@@ -113,7 +113,10 @@ pub struct Window {
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
     lanes: stage::LaneClock,
-    handoff: stage::Handoff,
+    tide: dither::Tide,
+    /// Where the tide's slot and the composer's column were laid out, in window points.
+    tide_rect: Option<[f32; 4]>,
+    dock_rect: Option<[f32; 4]>,
     seal: seal::Sweep,
     develop: develop::Develop,
     /// The slash list's highlighted row, for the composer text it was moved on.
@@ -175,10 +178,6 @@ impl HasCore for Window {
         self.shore_motion()
     }
 
-    fn thinking_merge(&self) -> f32 {
-        self.handoff.progress()
-    }
-
     fn lane_age(&self, label: &str) -> f32 {
         self.lanes.age(label)
     }
@@ -192,6 +191,9 @@ impl Window {
     pub fn new(core: Shared) -> Window {
         let mut composer = TextEdit::new("");
         composer.focused = true;
+        // A window opened on a working chat finds the tide already in.
+        let mut tide = dither::Tide::default();
+        tide.snap(tide_rises(&lock(&core)));
         Window {
             core,
             draft: Draft {
@@ -219,7 +221,9 @@ impl Window {
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
             lanes: stage::LaneClock::default(),
-            handoff: stage::Handoff::default(),
+            tide,
+            tide_rect: None,
+            dock_rect: None,
             seal: seal::Sweep::default(),
             develop: develop::Develop::default(),
             slash_pick: (String::new(), 0),
@@ -241,7 +245,6 @@ impl Window {
     /// Pages switch often, and often from the keyboard, so the new one lands whole in one frame.
     fn show(&mut self, page: Page, tx: &mut Tx) {
         if self.page != page {
-            self.handoff = stage::Handoff::default();
             rename::save(self, tx);
             tx.settle();
         }
@@ -505,10 +508,10 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     if switched || reloaded {
         s.copied_code.clear();
         s.preview_sources.clear();
-        s.handoff = stage::Handoff::default();
         s.fanout_answers.clear();
         s.seal.clear();
         s.develop.clear();
+        s.tide.snap(tide_rises(core));
         tx.settle();
     } else if done && s.seen.done == Some(false) && s.page == Page::Chat {
         s.seal.start(Instant::now());
@@ -649,13 +652,15 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(left);
     }
     s.lanes.track(at_work.as_ref());
-    s.handoff.track(
+    let tide = s.tide.level();
+    s.tide.tick(
         t,
-        at_work.as_ref().filter(|_| s.page == Page::Chat),
+        s.page == Page::Chat && tide_rises(&core),
         s.shore_motion(),
     );
+    changed |= s.tide.level() != tide;
     let live = s.page == Page::Chat
-        && (chat::blank(&core) || at_work.is_some())
+        && (chat::blank(&core) || at_work.is_some() || s.tide.moving())
         && s.shore_motion() == dither::Motion::Live;
     drop(core);
     if let Some(at) = s.board_rise_at {
@@ -674,6 +679,13 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
         tx.wake_after(dither::FRAME);
     }
     changed || live
+}
+
+/// Whether the chat's tide should be in: its agent works or thinks, outside a fan-out's pick.
+fn tide_rises(core: &Core) -> bool {
+    !chat::blank(core)
+        && parts::fanout_choice(core).is_none()
+        && Stage::of(core).is_some_and(|stage| stage.tide())
 }
 
 fn toolbar(s: &Window, core: &Core, k: &Kit) -> Toolbar {
@@ -762,18 +774,16 @@ pub fn view(s: &Window, cx: &mut Cx<Window>) -> El {
     })
 }
 
-/// A fixed halfway frame of the scanner opening into a thought, without a pi process.
-pub fn scene_thinking_merge(s: &mut Window) {
+/// The working chat with its tide `level` of the way in (before easing), without a pi process.
+pub fn scene_tide(s: &mut Window, level: f32) {
+    crate::fixtures::scene_working(&s.core);
+    s.tide.hold(level);
+}
+
+/// The chat thinking, its tide in.
+pub fn scene_thinking(s: &mut Window) {
     crate::fixtures::scene_thinking(&s.core);
-    let core = lock(&s.core);
-    s.seen.task = core.task_id();
-    s.seen.loads = core.loads;
-    s.handoff
-        .track(0.0, Some(&Stage::Working), dither::Motion::Live);
-    s.handoff
-        .track(0.0, Some(&Stage::Thinking), dither::Motion::Live);
-    s.handoff
-        .track(0.14, Some(&Stage::Thinking), dither::Motion::Live);
+    s.tide.hold(1.0);
 }
 
 /// A fixed halfway frame of the pass that develops an answer at the end of its turn.

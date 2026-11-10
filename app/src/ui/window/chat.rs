@@ -115,7 +115,12 @@ pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El 
         .scroll(ScrollSpec {
             stick_bottom: choice.is_none(),
         });
-    let mut bottom = col().w_full().max_w(width).gap(10.0);
+    let mut bottom = col()
+        .key("dock")
+        .w_full()
+        .max_w(width)
+        .gap(10.0)
+        .on_layout(|s: &mut Window, rect| s.dock_rect = Some(rect));
     if empty {
         bottom = bottom.child(empty_intro(k));
     }
@@ -174,6 +179,15 @@ pub(super) fn build(s: &Window, core: &Core, k: &'static Kit, dark: bool) -> El 
     }
     if empty {
         stage = stage.child(dither::slot(dark, s.shore_motion()));
+    } else if choice.is_none() && s.tide.level() > 0.0 {
+        let dock = s
+            .tide_rect
+            .zip(s.dock_rect)
+            .map(|([x, y, ..], [dx, dy, ..])| [dx - x, dy - y]);
+        stage = stage.child(
+            dither::tide(dark, s.shore_motion(), s.tide.level(), dock)
+                .on_layout(|s: &mut Window, rect| s.tide_rect = Some(rect)),
+        );
     }
     stage = stage.child(scroll).child(
         col()

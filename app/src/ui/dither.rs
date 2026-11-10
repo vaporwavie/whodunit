@@ -1,5 +1,6 @@
 //! An ordered-dither shoreline behind the empty chat, drawn on the GPU at an effect slot: ripples
-//! run along the band and a swash surges in and drains back, with foam on its leading edge.
+//! run along the band and a swash surges in and drains back, with foam on its leading edge. The
+//! same water rises along the bottom of a working chat as a tide.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -33,16 +34,130 @@ impl Motion {
     }
 }
 
+/// How far up from the chat's bottom edge the tide's slot reaches; the water sits lower.
+pub const TIDE_H: f32 = 340.0;
+/// The tide comes in fast and goes out slow, as the shore's swash does.
+const TIDE_IN: f32 = 1.4;
+const TIDE_OUT: f32 = 2.2;
+
+/// The first payload float: dark, then motion, then whether it's the tide.
+fn flags(dark: bool, motion: Motion, tide: bool) -> f32 {
+    f32::from(u8::from(dark)) + 2.0 * f32::from(motion as u8) + 8.0 * f32::from(u8::from(tide))
+}
+
+fn unflag(data: f32) -> (bool, Motion, bool) {
+    let bits = data as u32;
+    (
+        bits & 1 == 1,
+        Motion::of(((bits >> 1) & 3) as f32),
+        bits & 8 == 8,
+    )
+}
+
 /// Fills its parent, and fades out when the chat gets its first message.
 pub fn slot(dark: bool, motion: Motion) -> El {
     effect(MARK)
         .key("dither")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .effect_data([f32::from(u8::from(dark)), motion as u8 as f32, 0.0, 0.0])
+        .effect_data([flags(dark, motion, false), 0.0, 0.0, 0.0])
         .transition(
             Transition::asymmetric(Transition::none(), Transition::opacity())
                 .springs(SpringPair::new(Spring::NONE, Spring::new(0.15, 0.0))),
         )
+}
+
+/// The shore's water along the bottom of a working chat. `level` is how far it has come in (see
+/// `Tide`). `dock` is the composer's column as `[left inset, top]` in points from the slot's
+/// top-left, kept clear, with the slot's own edges; `None` before the first layout.
+pub fn tide(dark: bool, motion: Motion, level: f32, dock: Option<[f32; 2]>) -> El {
+    let [inset, top] = dock.unwrap_or([-1.0, -1.0]);
+    effect(MARK)
+        .key("tide")
+        .pin(Some(0.0), None, Some(0.0), Some(0.0))
+        .h(TIDE_H)
+        .effect_data([flags(dark, motion, true), level, inset, top])
+        .label("Working")
+        .transition(Transition::none())
+}
+
+/// How far the tide has come in, from 0 (out of sight below the chat) to 1. It moves toward
+/// whether the chat works: in while it does, back out when the turn ends.
+#[derive(Default)]
+pub struct Tide {
+    level: f32,
+    last: Option<f64>,
+}
+
+impl Tide {
+    /// Lands on `working` with no motion: another chat, or a chat reloaded.
+    pub fn snap(&mut self, working: bool) {
+        self.level = f32::from(u8::from(working));
+        self.last = None;
+    }
+
+    /// Holds at `level`, for snapshots.
+    pub fn hold(&mut self, level: f32) {
+        self.level = level.clamp(0.0, 1.0);
+        self.last = None;
+    }
+
+    /// `now` is the UI clock in seconds.
+    pub fn tick(&mut self, now: f64, working: bool, motion: Motion) {
+        let elapsed = self.last.map_or(0.0, |last| (now - last).max(0.0) as f32);
+        self.last = Some(now);
+        match motion {
+            // Held water would say a finished chat still works, so nothing moves unseen.
+            Motion::Still | Motion::Paused => self.snap(working),
+            Motion::Live if working => self.level = (self.level + elapsed / TIDE_IN).min(1.0),
+            Motion::Live => self.level = (self.level - elapsed / TIDE_OUT).max(0.0),
+        }
+    }
+
+    /// Linear in time; the shader eases where the water is (see `out` there).
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    pub fn moving(&self) -> bool {
+        self.level > 0.0 && self.level < 1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tide_comes_in_faster_than_it_goes_and_lands_when_not_live() {
+        let mut tide = Tide::default();
+        tide.tick(0.0, true, Motion::Live);
+        tide.tick(TIDE_IN as f64 / 2.0, true, Motion::Live);
+        assert!((tide.level() - 0.5).abs() < 0.001);
+        tide.tick((TIDE_IN / 2.0 + TIDE_OUT / 4.0) as f64, false, Motion::Live);
+        assert!((tide.level() - 0.25).abs() < 0.001, "out is slower than in");
+        tide.tick(10.0, true, Motion::Paused);
+        assert_eq!(tide.level(), 1.0, "unfocused, it lands");
+        tide.tick(11.0, false, Motion::Still);
+        assert_eq!(tide.level(), 0.0);
+        tide.tick(30.0, true, Motion::Live);
+        assert_eq!(
+            tide.level(),
+            0.0,
+            "a landing doesn't count as time going by"
+        );
+    }
+
+    #[test]
+    fn flags_round_trip() {
+        for dark in [false, true] {
+            for motion in Motion::ALL {
+                for tide in [false, true] {
+                    let (d, m, t) = unflag(flags(dark, motion, tide));
+                    assert!(d == dark && m == motion && t == tide);
+                }
+            }
+        }
+    }
 }
 
 struct Palette {
@@ -73,6 +188,33 @@ const DARK: Palette = Palette {
     strength: 1.0,
 };
 
+/// The tide is ink rather than water: one near-black (near-white in dark mode), its depth carried
+/// by the dither alone, a shade softer at the crest.
+const TIDE_LIGHT: Palette = Palette {
+    stops: [
+        (-200.0, 0x111111),
+        (-100.0, 0x111111),
+        (-35.0, 0x2b2b2b),
+        (0.0, 0x3a3a3a),
+        (28.0, 0x1c1c1c),
+    ],
+    foam: 0x6e6e6e,
+    speck_dim: 1.0,
+    strength: 0.6,
+};
+const TIDE_DARK: Palette = Palette {
+    stops: [
+        (-200.0, 0xece9e3),
+        (-100.0, 0xece9e3),
+        (-35.0, 0xcfccc6),
+        (0.0, 0xbdbab4),
+        (28.0, 0xdedbd5),
+    ],
+    foam: 0x8d8a85,
+    speck_dim: 0.8,
+    strength: 0.65,
+};
+
 fn rgb(hex: u32) -> [f32; 3] {
     [(hex >> 16) & 0xff, (hex >> 8) & 0xff, hex & 0xff].map(|c| c as f32 / 255.0)
 }
@@ -82,11 +224,13 @@ struct P {
     rect: vec4f,
     // scale, time, sRGB blending, strength
     misc: vec4f,
-    // pass origin x and y, speck dimming
+    // pass origin x and y, speck dimming, tide
     origin: vec4f,
     foam: vec4f,
     // colour, and where across the band it sits
     stops: array<vec4f, 5>,
+    // the tide's level, the composer column's left inset and top (negative before layout)
+    tide: vec4f,
 }
 var<immediate> p: P;
 
@@ -149,15 +293,37 @@ fn to_linear(c: vec3f) -> vec3f {
     let y = pt.y;
     let h = p.rect.w / scale;
 
-    let slope = 0.42;
+    let tide = p.origin.w > 0.5;
+    let w = p.rect.z / scale;
+    // The composer's column, kept clear: from its top to the chat's padding at the bottom.
+    // Before the first layout, a guess at where it sits.
+    var inset = p.tide.y;
+    var dock = p.tide.z;
+    if (dock < 0.0) {
+        inset = max(24.0, (w - 820.0) * 0.5);
+        dock = h - 122.0;
+    }
+    let slope = select(0.42, 0.0, tide);
     let ripple = 16.0 * sin(x / 190.0 - t * 0.5) + 8.0 * sin(x / 71.0 + 1.3 - t * 0.9);
-    // The swash breaks along the shore: in fast, out slow.
-    let phase = fract((t - x / 700.0) / 7.0);
+    // The swash breaks along the shore: in fast, out slow. The tide's comes quicker.
+    let phase = select(fract((t - x / 700.0) / 7.0), fract((t * 1.6 - x / 900.0) / 7.0), tide);
     let surge = smoothstep(0.0, 0.16, phase) * (1.0 - smoothstep(0.16, 1.0, phase));
-    let line = 36.0 + slope * x + ripple + 36.0 * surge;
-    let d = (y - line) / sqrt(1.0 + slope * slope);
+    var d: f32;
+    if (tide) {
+        // The sea lies below the line, which rests just above the composer. Going out, the line
+        // sinks below the slot, foam and spray with it. Squared, it crosses the hidden part behind
+        // the composer quickly: it slows as it comes in, and gathers pace as it goes out.
+        let rest = dock - 18.0;
+        let away = 1.0 - p.tide.x;
+        let out = away * away * (h - rest + 110.0);
+        let line = rest + out - 0.6 * ripple - 18.0 * surge;
+        d = line - y;
+    } else {
+        let line = 36.0 + slope * x + ripple + 36.0 * surge;
+        d = (y - line) / sqrt(1.0 + slope * slope);
+    }
 
-    let above = smoothstep(-260.0, -10.0, d);
+    let above = smoothstep(select(-260.0, -170.0, tide), -10.0, d);
     let below = 1.0 - smoothstep(6.0, 64.0, d);
     var lit = above * above * below;
     var color = ramp(d);
@@ -167,7 +333,17 @@ fn to_linear(c: vec3f) -> vec3f {
     lit = max(lit, foam);
     color = mix(color, p.foam.rgb, clamp(foam * 1.6, 0.0, 1.0));
 
-    let bottom = 1.0 - smoothstep(h - 90.0, h - 10.0, y);
+    var bottom = 1.0 - smoothstep(h - 90.0, h - 10.0, y);
+    if (tide) {
+        // Clear of the chat's edges, and of the composer's column with a margin around it.
+        let sides = smoothstep(2.0, 44.0, x) * smoothstep(2.0, 44.0, w - x);
+        let edge = smoothstep(2.0, 30.0, h - y);
+        let centre = vec2f(w * 0.5, (dock + h - 18.0) * 0.5);
+        let half = vec2f(w * 0.5 - inset, (h - 18.0 - dock) * 0.5);
+        let q = abs(pt - centre) - half;
+        let gap = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0);
+        bottom = sides * edge * smoothstep(4.0, 60.0, gap);
+    }
     lit *= bottom * p.misc.w;
 
     var alpha = 1.0;
@@ -175,7 +351,9 @@ fn to_linear(c: vec3f) -> vec3f {
         // A speck glints for part of its cycle, fading in and out.
         let id = cell_hash(cell);
         let cycle = t * 0.8 + u01(id) * 9.0;
-        let specks = 0.03 * (1.0 - smoothstep(220.0, 400.0, y)) * bottom;
+        var specks = 0.03 * (1.0 - smoothstep(220.0, 400.0, y)) * bottom;
+        // The tide's spray flies just above the water, never off the slot's top edge.
+        if (tide) { specks = 0.025 * exp(-pow((d - 30.0) / 24.0, 2.0)) * smoothstep(0.0, 30.0, y) * bottom; }
         if (u01(id ^ pcg(u32(floor(cycle)))) >= specks) { discard; }
         let q = fract(cycle);
         alpha = smoothstep(0.0, 0.15, q) * (1.0 - smoothstep(0.6, 0.85, q));
@@ -186,7 +364,7 @@ fn to_linear(c: vec3f) -> vec3f {
 }
 "#;
 
-const IMMEDIATES: usize = 4 * (4 + 5) * 4;
+const IMMEDIATES: usize = 4 * (4 + 6) * 4;
 
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     pipeline_for(device, format, "dither", SHADER, IMMEDIATES)
@@ -249,8 +427,14 @@ pub fn pipeline_with(
 }
 
 fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8> {
-    let [dark, ..] = site.data;
-    let palette = if dark > 0.5 { &DARK } else { &LIGHT };
+    let [flags, level, inset, top] = site.data;
+    let (dark, _, tide) = unflag(flags);
+    let palette = match (tide, dark) {
+        (false, false) => &LIGHT,
+        (false, true) => &DARK,
+        (true, false) => &TIDE_LIGHT,
+        (true, true) => &TIDE_DARK,
+    };
     let [x, y, w, h] = site.instance.rect;
     let [ox, oy] = site.origin;
     let [fr, fg, fb] = rgb(palette.foam);
@@ -266,7 +450,7 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
         ox,
         oy,
         palette.speck_dim,
-        0.0,
+        f32::from(u8::from(tide)),
         fr,
         fg,
         fb,
@@ -276,6 +460,7 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
         let [r, g, b] = rgb(hex);
         values.extend([r, g, b, at]);
     }
+    values.extend([level, inset, top, 0.0]);
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 
@@ -369,7 +554,7 @@ impl Compositor<Window> for Waves {
             if site.mark != MARK {
                 return;
             }
-            let t = match Motion::of(site.data[1]) {
+            let t = match unflag(site.data[0]).1 {
                 Motion::Live => {
                     next = shore + (now - last);
                     next

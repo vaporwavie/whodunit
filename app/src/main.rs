@@ -108,11 +108,9 @@ fn main() {
             ("developing", window::scene_developing),
             ("fanout", |s: &mut Window| fixtures::scene_fanout(&s.core)),
             ("dealing", |s: &mut Window| fixtures::scene_dealing(&s.core)),
-            ("working", |s: &mut Window| fixtures::scene_working(&s.core)),
-            ("thinking", |s: &mut Window| {
-                fixtures::scene_thinking(&s.core)
-            }),
-            ("thinking-merge", window::scene_thinking_merge),
+            ("working", |s: &mut Window| window::scene_tide(s, 1.0)),
+            ("tide", |s: &mut Window| window::scene_tide(s, 0.7)),
+            ("thinking", window::scene_thinking),
             ("fanning", |s: &mut Window| fixtures::scene_fanning(&s.core)),
             ("fanout-long", |s: &mut Window| {
                 fixtures::scene_fanout_long(&s.core)

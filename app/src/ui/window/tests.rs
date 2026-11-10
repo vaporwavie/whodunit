@@ -401,7 +401,7 @@ fn a_working_chat_shows_its_stage_until_it_ends() {
         crate::fixtures::scene_fanning,
     ]
     .into_iter()
-    .zip(["/stage-deal", "/stage-scan", "/stage-fanout"])
+    .zip(["/stage-deal", "/tide", "/stage-fanout"])
     {
         let core = core(scene);
         let mut rt = window(core.clone());
@@ -412,7 +412,10 @@ fn a_working_chat_shows_its_stage_until_it_ends() {
             core.t.week.done = Some(crate::transcript::Done { score: 4 });
             core.version += 1;
         }
-        rt.frame(1.0);
+        // The tide goes out rather than vanish, so give it time to drain.
+        for _ in 0..3 {
+            rt.frame(1.0);
+        }
         assert!(!shows(&rt, key), "{key} leaves once the run ends");
     }
 }
@@ -437,12 +440,12 @@ fn dot_art_replaces_the_generic_working_row() {
 }
 
 #[test]
-fn a_live_thought_writes_itself_in_place_of_the_scanner() {
+fn a_live_thought_writes_itself_over_the_tide() {
     let core = core(crate::fixtures::scene_thinking);
     let rt = window(core.clone());
     let last = lock(&core).t.items.len() - 1;
     assert!(shows(&rt, &format!("/item-{last}-think0")));
-    assert!(!shows(&rt, "/stage-scan"), "one animation at a time");
+    assert!(shows(&rt, "/tide"), "the tide stays through the whole turn");
     assert!(rt.wake_deadline().is_some(), "the thought keeps drawing");
     assert!(
         rt.elements().iter().all(|e| !e
@@ -455,108 +458,55 @@ fn a_live_thought_writes_itself_in_place_of_the_scanner() {
 }
 
 #[test]
-fn the_scanner_hands_its_space_to_an_incoming_thought_without_restarting_on_tokens() {
-    let shared = core(crate::fixtures::scene_working);
+fn the_tide_comes_in_and_goes_out_with_the_turn() {
+    let shared = core(crate::fixtures::scene_chat);
     let mut rt = window(shared.clone());
     rt.state.window_focused = true;
-    rt.frame(0.016);
-    let scan = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some("stage-scan"))
-        .unwrap()
-        .rect;
-    let last = {
+    assert!(!shows(&rt, "/tide"));
+    let work = |on: bool| {
         let mut core = lock(&shared);
-        if let Some(Item::Assistant { streaming, .. }) = core.t.items.last_mut() {
-            *streaming = false;
-        }
-        core.t.items.push(Item::Assistant {
-            blocks: vec![],
-            streaming: true,
-            error: None,
-        });
+        core.streaming = on;
         core.version += 1;
-        core.t.items.len() - 1
     };
-    rt.frame(0.016);
-    assert_eq!(rt.state.handoff.progress(), 0.0);
-    assert!(!shows(&rt, "/stage-scan"));
-    let key = format!("item-{last}-think0");
-    let thought = rt
-        .elements()
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(&key))
-        .unwrap();
-    for (a, b) in scan.into_iter().zip(thought.rect) {
-        assert!(
-            (a - b).abs() < 0.5,
-            "scanner {scan:?}, thought {:?}",
-            thought.rect
-        );
-    }
-    {
-        let mut core = lock(&shared);
-        if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
-            blocks.push(Some(crate::transcript::Block::Thinking("secret".into())));
-        }
-        core.version += 1;
-    }
-    rt.frame(0.14);
-    assert!((rt.state.handoff.progress() - 0.5).abs() < 0.001);
-    assert!(shows(&rt, &format!("/{key}")));
-    rt.frame(0.16);
-    assert_eq!(rt.state.handoff.progress(), 1.0);
+    work(true);
+    rt.frame(0.1);
+    rt.frame(0.5);
+    let coming = rt.state.tide.level();
+    assert!(
+        shows(&rt, "/tide") && coming > 0.0 && coming < 1.0,
+        "{coming}"
+    );
+    rt.frame(1.0);
+    assert_eq!(rt.state.tide.level(), 1.0);
+    work(false);
+    rt.frame(1.0);
+    assert!(shows(&rt, "/tide"), "it drains rather than pop out");
+    assert!(rt.state.tide.level() < 1.0);
+    rt.frame(1.5);
+    rt.frame(0.1);
+    assert!(!shows(&rt, "/tide"));
 }
 
 #[test]
-fn thinking_after_text_in_the_same_message_keeps_the_scanners_anchor() {
+fn the_tide_leaves_room_under_the_tail_and_stays_out_of_a_dealing_or_fanout() {
     let shared = core(crate::fixtures::scene_working);
-    let mut rt = window(shared.clone());
-    let rect = |rt: &Runtime<Window>, key: &str| {
+    let rt = window(shared);
+    let rect = |key: &str| {
         rt.elements()
             .into_iter()
             .find(|e| e.key.as_deref() == Some(key))
             .unwrap()
             .rect
     };
-    let scan = rect(&rt, "stage-scan");
-    let last = {
-        let mut core = lock(&shared);
-        if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
-            blocks.push(Some(crate::transcript::Block::Thinking("secret".into())));
-        }
-        core.version += 1;
-        core.t.items.len() - 1
-    };
-    rt.frame(0.016);
-    let thought = rect(&rt, &format!("item-{last}-think1"));
-    for (a, b) in scan.into_iter().zip(thought) {
-        assert!((a - b).abs() < 0.5, "scanner {scan:?}, thought {thought:?}");
-    }
-}
-
-#[test]
-fn reloading_or_leaving_a_chat_clears_a_thinking_handoff() {
-    let shared = core(crate::fixtures::scene_thinking);
-    let mut rt = window(shared.clone());
-    for leave in [false, true] {
-        rt.state
-            .handoff
-            .track(0.0, Some(&Stage::Working), dither::Motion::Live);
-        rt.state
-            .handoff
-            .track(0.0, Some(&Stage::Thinking), dither::Motion::Live);
-        assert_eq!(rt.state.handoff.progress(), 0.0);
-        if leave {
-            rt.update(|s, tx| s.show(Page::Scoreboard, tx));
-        } else {
-            let mut core = lock(&shared);
-            core.loads += 1;
-            core.version += 1;
-        }
-        rt.frame(0.016);
-        assert_eq!(rt.state.handoff.progress(), 1.0);
+    let [_, gap_y, _, gap_h] = rect("stage-tide-gap");
+    let [_, tide_y, ..] = rect("tide");
+    assert!(gap_y + gap_h > tide_y, "the gap sits over the crest");
+    for scene in [
+        crate::fixtures::scene_dealing as fn(&Shared),
+        crate::fixtures::scene_fanning,
+    ] {
+        let rt = window(core(scene));
+        assert!(!shows(&rt, "/tide"));
     }
 }
 

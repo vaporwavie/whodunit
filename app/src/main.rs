@@ -92,7 +92,16 @@ fn main() {
         families: rune_theme_opencode::FAMILIES,
         scenes: &[
             ("empty", |s: &mut Window| fixtures::scene_empty(&s.core)),
+            ("folderless", |s: &mut Window| {
+                fixtures::scene_folderless(&s.core)
+            }),
             ("chat", |s: &mut Window| fixtures::scene_chat(&s.core)),
+            ("flowchart", |s: &mut Window| {
+                fixtures::scene_flowchart(&s.core)
+            }),
+            ("design-system", |s: &mut Window| {
+                fixtures::scene_design_system(&s.core)
+            }),
             ("end", |s: &mut Window| fixtures::scene_end(&s.core)),
             ("reveal", |s: &mut Window| fixtures::scene_reveal(&s.core)),
             ("sealing", window::scene_sealing),

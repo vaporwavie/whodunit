@@ -20,7 +20,7 @@ Each row shows its folder, with the size and score added only after the run ends
 
 If classification or dealing stalls, click **Stop dealing** in the composer's send slot or press Esc. The app stops that chat's pi process and restores the first prompt and its images to the composer for editing or retry. Any unsent draft stays with them, and other chats keep working. Once an agent has been dealt, Stop aborts its turn without changing the agent.
 
-Code snippets have a **Copy** button that copies just the code, without Markdown fences. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
+Code snippets have a copy icon that copies just the code, without Markdown fences. It changes to a checkmark briefly after copying. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
 Edits and writes show as diffs. Dot art carries the working state; a status line over the composer appears only for dealing, fan-out progress, retries and compaction. Thinking stays hidden until the run ends, since a trace's style names the lab: while the agent thinks, three thick bands of dithered redaction write themselves, with broad runs and irregular breaks. A finished thought keeps two still bands with a shorter last line, the same size whatever the trace's length. When thinking replaces the scanner, its strip opens into those lines over 280 ms without restarting the sweep. The handoff pauses while unfocused and is skipped with Reduce Motion or when opening an existing chat. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
 
@@ -52,6 +52,52 @@ Offline service tests use the built executable and a fake pi peer, with no model
 ```sh
 cd app
 cargo test --test background_service
+```
+
+## Flowcharts and design systems
+
+Chat and fan-out answers render fenced `mermaid` blocks as native diagrams. Flowcharts can show processes or system architecture; sequence, state, class, ER and C4 diagrams work too. No browser, Mermaid CLI or network service is needed. Diagrams grow as complete lines arrive in a streaming reply.
+
+````markdown
+```mermaid
+flowchart LR
+    Client --> API
+    API --> Cache
+    API --> Database
+```
+````
+
+The code-brackets icon (**Show source**) switches a diagram to its Mermaid text; the eye icon (**Show preview**) switches back. The copy icon copies the source without the fences and briefly becomes a checkmark. Each icon has a tooltip and an accessible label. The renderer supports a subset of Mermaid: unknown diagram types stay as code, and unsupported statements in a recognized diagram may be skipped. Check Source when a diagram looks incomplete.
+
+For a design-token specimen, ask the agent for a fenced `design-system` block containing JSON:
+
+````markdown
+```design-system
+{
+  "name": "Field notes",
+  "colors": {
+    "ink": "#29352E",
+    "paper": "#F4F1E8",
+    "accent": "#B65D3C"
+  },
+  "typography": {
+    "body": {"size": 14, "sample": "A quiet place to keep your thoughts."},
+    "heading": {"size": 26, "weight": 600, "sample": "Notes from the field"}
+  },
+  "spacing": {"small": 8, "medium": 16, "large": 32}
+}
+```
+````
+
+The preview shows labeled color swatches, type samples in the app's typeface and spacing bars at their actual sizes. It has the same Source/Preview and Copy controls. This is a token preview, not an HTML/CSS playground or a component renderer.
+
+`name` is optional, as are the three sections, but at least one section must contain tokens. Colors accept `#RGB`, `#RRGGBB` and `#RRGGBBAA`. Typography uses sizes of 8–72 points and weights of 100–900 (400 by default); `sample` is optional and limited to 160 characters. Spacing is 0–128 points. Names are at most 80 characters, each section has at most 32 tokens, and the JSON must fit in 32 KiB. Unknown fields or invalid values leave the code visible with an error. An unfinished block stays as code until its closing fence arrives. Nothing in a preview executes code or loads external fonts.
+
+Headless fixture scenes are `flowchart` and `design-system`:
+
+```sh
+cargo run --release -- --snap flowchart.png --scene flowchart --theme dark --scale 2
+cargo run --release -- --snap tokens.png --scene design-system --theme light --scale 2
 ```
 
 ## Images

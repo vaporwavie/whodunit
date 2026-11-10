@@ -93,6 +93,51 @@ pub fn scene_chat(shared: &Shared) {
     sidebar(&mut core);
 }
 
+pub fn scene_flowchart(shared: &Shared) {
+    scene_chat(shared);
+    let mut core = lock(shared);
+    core.t.name = Some("Request flow".into());
+    core.t.first_prompt = Some("Show how a request moves through the service.".into());
+    core.sessions[0].title = "Request flow".into();
+    core.t.items = vec![
+        Item::user("Show how a request moves through the service."),
+        Item::Assistant {
+            blocks: vec![Some(Block::Text("## Request flow\n\nThe cache handles repeat reads; misses go to the database.\n\n```mermaid\nflowchart TD\n    A[Client request] --> B{Cached?}\n    B -->|Hit| C[Return response]\n    B -->|Miss| D[Query database]\n    D --> E[Update cache]\n    E --> C\n```".into()))],
+            streaming: false,
+            error: None,
+        },
+    ];
+}
+
+pub fn scene_design_system(shared: &Shared) {
+    scene_chat(shared);
+    let mut core = lock(shared);
+    core.t.name = Some("Field notes design system".into());
+    core.t.first_prompt = Some("Show the design tokens for Field notes.".into());
+    core.sessions[0].title = "Field notes design system".into();
+    core.t.items = vec![
+        Item::user("Show the design tokens for Field notes."),
+        Item::Assistant {
+            blocks: vec![Some(Block::Text(
+                r##"```design-system
+{
+  "name": "Field notes",
+  "colors": {"accent": "#B65D3C", "ink": "#29352E", "paper": "#F4F1E8"},
+  "typography": {
+    "body": {"size": 14, "sample": "A quiet place to keep your thoughts."},
+    "heading": {"size": 26, "weight": 600, "sample": "Notes from the field"}
+  },
+  "spacing": {"small": 8, "medium": 16, "large": 32}
+}
+```"##
+                    .into(),
+            ))],
+            streaming: false,
+            error: None,
+        },
+    ];
+}
+
 /// A new task before the first prompt: the empty body over the composer.
 pub fn scene_empty(shared: &Shared) {
     sidebar(&mut lock(shared));

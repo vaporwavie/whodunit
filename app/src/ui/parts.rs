@@ -1,15 +1,16 @@
 //! View pieces of the chat window. Every handler reaches the shared core through `HasCore`.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rune::{Color, El, GrowthSpec, ScrollSpec, SurfaceFit, Tx, col, el, row, spacer, text};
+use rune::{Color, El, GrowthSpec, Icon, ScrollSpec, SurfaceFit, Tx, col, el, row, spacer, text};
 use rune_kit::diff::{self, DiffState, DiffView, FileDiff};
 use rune_kit::{
-    Badge, BadgeVariant, Button, ButtonVariant, ControlSize, Kit, Markdown, MarkdownStyle, Spinner,
+    Badge, BadgeVariant, Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit,
+    Markdown, MarkdownStyle, Spinner,
 };
 use serde_json::json;
 
@@ -18,6 +19,7 @@ use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item, Shot};
 use crate::ui::dither::Motion;
 use crate::ui::stage::{self, Fanout, Stage};
+use crate::ui::design_system;
 
 pub trait HasCore: 'static {
     fn core(&self) -> &Shared;
@@ -26,6 +28,8 @@ pub trait HasCore: 'static {
     fn diff_mut(&mut self, id: &str) -> &mut DiffState;
     fn copied_code(&self) -> &HashMap<String, Instant>;
     fn mark_code_copied(&mut self, id: String);
+    fn preview_sources(&self) -> &HashSet<String>;
+    fn toggle_preview_source(&mut self, id: String);
     /// A prompt image, decoding or decoded; `None` where nothing decodes (headless tests).
     fn image(&self, _shot: &Shot) -> Option<rune::Image> {
         None
@@ -161,8 +165,34 @@ fn mono_frame(k: &Kit) -> El {
 
 pub(super) const COPIED_FOR: Duration = Duration::from_millis(1500);
 
+static COPY: Icon = Icon {
+    name: "aw-copy",
+    view: 16.0,
+    body: r#"<rect x="5.5" y="5.5" width="7" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M9.5 5.5V4A1.5 1.5 0 0 0 8 2.5H4A1.5 1.5 0 0 0 2.5 4V9A1.5 1.5 0 0 0 4 10.5H5.5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/>"#,
+};
+static COPIED: Icon = Icon {
+    name: "aw-copied",
+    view: 16.0,
+    body: r#"<path d="M3.5 8L6.5 11L12.5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static SOURCE: Icon = Icon {
+    name: "aw-source",
+    view: 16.0,
+    body: r#"<path d="M5 4.5L1.5 8L5 11.5M11 4.5L14.5 8L11 11.5M9 3L7 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"#,
+};
+static PREVIEW: Icon = Icon {
+    name: "aw-preview",
+    view: 16.0,
+    body: r#"<path d="M1.5 8S4 3.5 8 3.5S14.5 8 14.5 8S12 12.5 8 12.5S1.5 8 1.5 8Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" fill="none"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2" fill="none"/>"#,
+};
+
 fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
     let copied = s.copied_code().clone();
+    let sources = s.preview_sources().clone();
+    let diagram_copied = copied.clone();
+    let diagram_sources = sources.clone();
+    let diagram_key = key.clone();
+    let diagram_kit = k.clone();
     let style = MarkdownStyle::from_kit(k)
         .code_block(k.c.layer_01, Color::TRANSPARENT)
         .code_block_font(k.ty.mono)
@@ -182,43 +212,122 @@ fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
                 }
             }
         })
-        .code_frame(move |card, code| {
-            let source = code.source.to_owned();
-            let id = format!("{key}-code{}", code.index);
-            let mut header = row().w_full().px(12.0).pt(6.0).center_y();
-            if let Some(language) = code.language {
-                header = header.child(
-                    text(language.to_owned())
-                        .font(k.ty.small)
-                        .color(k.c.text_muted),
-                );
-            }
-            header = header.child(spacer()).child(
-                Button::new(if copied.contains_key(&id) {
-                    "Copied"
-                } else {
-                    "Copy"
-                })
-                .variant(ButtonVariant::Ghost)
-                .control_size(ControlSize::Small)
-                .on_press_tx(move |s: &mut S, tx| {
-                    tx.copy(source.clone());
-                    s.mark_code_copied(id.clone());
-                    tx.wake_after(COPIED_FOR);
-                })
-                .build(&k)
-                .w(72.0)
-                .key("copy-code")
-                .label("Copy code"),
-            );
-            col()
-                .key(format!("code-{}", code.index))
-                .w_full()
-                .radius(k.radius.md)
-                .fill(k.c.layer_01)
-                .child(header)
-                .child(card)
+        .diagram_frame(move |card, diagram| {
+            let id = format!("{diagram_key}-code{}", diagram.index);
+            let shown = diagram_sources.contains(&id);
+            let body = if shown {
+                mono_frame(&diagram_kit).child(
+                    text(diagram.source.to_owned())
+                        .font(diagram_kit.ty.mono)
+                        .color(diagram_kit.c.text_base)
+                        .wrap()
+                        .selectable(true),
+                )
+            } else {
+                card
+            };
+            fenced::<S>(
+                body,
+                Some("mermaid"),
+                diagram.source,
+                id.clone(),
+                diagram_copied.contains_key(&id),
+                Some(shown),
+                &diagram_kit,
+            )
         })
+        .code_frame(move |card, code| {
+            let id = format!("{key}-code{}", code.index);
+            let copied = copied.contains_key(&id);
+            let mut source_shown = None;
+            let body = if code.language == Some("design-system") && !code.open {
+                match design_system::render(code.source, &k) {
+                    Ok(preview) => {
+                        let shown = sources.contains(&id);
+                        source_shown = Some(shown);
+                        if shown { card } else { preview }
+                    }
+                    Err(error) => col()
+                        .w_full()
+                        .gap(6.0)
+                        .child(
+                            text(format!("Cannot preview design system: {error}"))
+                                .font(k.ty.small)
+                                .color(k.c.danger.fg)
+                                .wrap()
+                                .px(12.0),
+                        )
+                        .child(card),
+                }
+            } else {
+                card
+            };
+            fenced::<S>(
+                body,
+                code.language,
+                code.source,
+                id,
+                copied,
+                source_shown,
+                &k,
+            )
+        })
+}
+
+fn fenced<S: HasCore>(
+    body: El,
+    language: Option<&str>,
+    source: &str,
+    id: String,
+    copied: bool,
+    source_shown: Option<bool>,
+    k: &Kit,
+) -> El {
+    let mut header = row().w_full().gap(4.0).px(12.0).pt(6.0).center_y();
+    if let Some(language) = language {
+        header = header.child(
+            text(language.to_owned())
+                .font(k.ty.small)
+                .color(k.c.text_muted)
+                .truncate()
+                .shrink(),
+        );
+    }
+    header = header.child(spacer());
+    if let Some(shown) = source_shown {
+        let toggle_id = id.clone();
+        header = header.child(
+            IconButton::new(if shown { &PREVIEW } else { &SOURCE })
+                .variant(IconButtonVariant::GhostMuted)
+                .label(if shown { "Show preview" } else { "Show source" })
+                .help(if shown { "Show preview" } else { "Show source" })
+                .on_press(move |s: &mut S| s.toggle_preview_source(toggle_id.clone()))
+                .build(k)
+                .key("preview-source"),
+        );
+    }
+    let source = source.to_owned();
+    let copy_id = id.clone();
+    header = header.child(
+        IconButton::new(if copied { &COPIED } else { &COPY })
+            .variant(IconButtonVariant::GhostMuted)
+            .label(if copied { "Copied" } else { "Copy code" })
+            .help(if copied { "Copied" } else { "Copy code" })
+            .on_press_tx(move |s: &mut S, tx| {
+                tx.copy(source.clone());
+                s.mark_code_copied(copy_id.clone());
+                tx.wake_after(COPIED_FOR);
+            })
+            .build(k)
+            .key("copy-code"),
+    );
+    col()
+        .key(id)
+        .w_full()
+        .radius(k.radius.md)
+        .fill(k.c.layer_01)
+        .child(header)
+        .child(body)
 }
 
 /// The file a link names, if it names one rather than a web page: an absolute or `~/` path, a

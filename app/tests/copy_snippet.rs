@@ -49,7 +49,9 @@ fn copy(rt: &mut Runtime<Window>, index: usize) {
 fn copied_labels(rt: &Runtime<Window>) -> usize {
     rt.elements()
         .iter()
-        .filter(|el| el.text.as_deref() == Some("Copied"))
+        .filter(|el| {
+            el.key.as_deref() == Some("copy-code") && el.label.as_deref() == Some("Copied")
+        })
         .count()
 }
 
@@ -62,7 +64,29 @@ fn copy_preserves_code_without_prose_or_fences() {
     )]);
     let board = clipboard::memory();
     rt.use_clipboard(&board);
+    let before = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("copy-code"))
+        .unwrap();
+    assert_eq!(before.label.as_deref(), Some("Copy code"));
+    assert_eq!(before.help.as_deref(), Some("Copy code"));
+    assert!(before.focusable);
+    assert_eq!(before.rect[2], before.rect[3]);
     copy(&mut rt, 0);
+    let after = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("copy-code"))
+        .unwrap();
+    assert_eq!(after.label.as_deref(), Some("Copied"));
+    assert_eq!(after.help.as_deref(), Some("Copied"));
+    assert_eq!(after.rect, before.rect);
+    assert!(
+        !rt.elements()
+            .iter()
+            .any(|e| e.text.as_deref() == Some("Copied"))
+    );
     assert_eq!(board.content().unwrap().text(), source);
     assert!(lock(&core).toasts.is_empty());
     assert_eq!(copied_labels(&rt), 1);

@@ -1,7 +1,7 @@
 //! The app's window: the session sidebar, then a chat (transcript, composer) or the scoreboard
 //! page, under the week's rules.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -99,6 +99,7 @@ pub struct Window {
     /// Diffs of the open session's `edit` and `write` calls, by call id.
     diffs: HashMap<String, DiffState>,
     copied_code: HashMap<String, Instant>,
+    preview_sources: HashSet<String>,
     /// The working timer's second as last drawn.
     ticked: Option<u64>,
     /// Each sidebar row's last-updated label as last drawn.
@@ -136,6 +137,16 @@ impl HasCore for Window {
     fn mark_code_copied(&mut self, id: String) {
         self.copied_code
             .insert(id, Instant::now() + parts::COPIED_FOR);
+    }
+
+    fn preview_sources(&self) -> &HashSet<String> {
+        &self.preview_sources
+    }
+
+    fn toggle_preview_source(&mut self, id: String) {
+        if !self.preview_sources.remove(&id) {
+            self.preview_sources.insert(id);
+        }
     }
 
     fn image(&self, shot: &Shot) -> Option<rune::Image> {
@@ -182,6 +193,7 @@ impl Window {
             picker: FolderPicker::default(),
             diffs: HashMap::new(),
             copied_code: HashMap::new(),
+            preview_sources: HashSet::new(),
             ticked: None,
             ages: Vec::new(),
             window_focused: false,
@@ -426,6 +438,7 @@ fn catch_up(s: &mut Window, core: &Core, tx: &mut Tx) -> bool {
     let done = core.t.week.done.is_some();
     if switched || reloaded {
         s.copied_code.clear();
+        s.preview_sources.clear();
         s.handoff = stage::Handoff::default();
         s.seal.clear();
         tx.settle();

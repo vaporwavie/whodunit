@@ -512,22 +512,50 @@ fn a_clicked_image_opens_whole_and_esc_closes_only_it() {
 
 #[test]
 fn a_clicked_link_opens_and_one_that_cant_says_why() {
-    let core = core(|core| {
-        lock(core).t.items = vec![Item::Assistant {
-            blocks: vec![Some(crate::transcript::Block::Text(
-                "See [the docs](https://example.com/docs) or [the file](src/main.rs).".into(),
-            ))],
+    let dir = std::env::temp_dir().join(format!("whodunit-links-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shot.png"),
+        &crate::fixtures::screenshot().bytes[..],
+    )
+    .unwrap();
+    let by_url = format!("file://{}/shot.png", dir.display());
+    let core = core(|_| {});
+    {
+        let mut core = lock(&core);
+        core.cwd = dir.clone();
+        core.t.items = vec![Item::Assistant {
+            blocks: vec![Some(crate::transcript::Block::Text(format!(
+                "See [the docs](https://example.com/docs), [gone](missing.rs), \
+                 [the shot](shot.png) or [the same](<{by_url}>)."
+            )))],
             streaming: false,
             error: None,
         }];
-    });
+    }
     let mut rt = window(core.clone());
     click(&mut rt, "https://example.com/docs");
     assert_eq!(rt.take_url_requests(), ["https://example.com/docs"]);
     assert!(lock(&core).toasts.is_empty());
-    click(&mut rt, "src/main.rs");
+
+    click(&mut rt, "missing.rs");
     assert!(rt.take_url_requests().is_empty());
-    assert!(lock(&core).toasts[0].text.ends_with("src/main.rs"));
+    let gone = format!("No such file: {}", dir.join("missing.rs").display());
+    assert_eq!(lock(&core).toasts[0].text, gone);
+
+    // A relative path is the chat's folder's; a file URL is the same file.
+    for link in ["shot.png", by_url.as_str()] {
+        click(&mut rt, link);
+        assert_eq!(
+            rt.state.viewing,
+            Some(crate::fixtures::screenshot()),
+            "{link}"
+        );
+        rt.key(Key::Escape.into());
+        rt.frame(1.0);
+    }
+    assert!(rt.take_url_requests().is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

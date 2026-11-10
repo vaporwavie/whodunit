@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rune::{Color, El, GrowthSpec, ScrollSpec, SurfaceFit, Tx, col, el, row, spacer, text};
@@ -13,6 +13,7 @@ use rune_kit::{
 };
 use serde_json::json;
 
+use crate::config;
 use crate::core::{Core, DialogKind, Shared, lock, score_key};
 use crate::transcript::{Block, FanAnswer, Item, Shot};
 use crate::ui::dither::Motion;
@@ -171,8 +172,14 @@ fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
         .style(style)
         .selectable(true)
         .on_link_tx(|s: &mut S, url, tx| {
-            if let Err(e) = tx.open_url(url) {
-                with_core(s, |core| core.toast(format!("{e}: {url}"), "warning"));
+            let cwd = lock(s.core()).cwd.clone();
+            match link_path(url, &cwd) {
+                Some(path) => open_file(s, &path),
+                None => {
+                    if let Err(e) = tx.open_url(url) {
+                        with_core(s, |core| core.toast(format!("{e}: {url}"), "warning"));
+                    }
+                }
             }
         })
         .code_frame(move |card, code| {
@@ -212,6 +219,111 @@ fn markdown<S: HasCore>(s: &S, body: String, key: String, k: &Kit) -> Markdown {
                 .child(header)
                 .child(card)
         })
+}
+
+/// The file a link names, if it names one rather than a web page: an absolute or `~/` path, a
+/// `file://` URL, or a path relative to the chat's folder. A `#L12` or `:12:3` suffix is
+/// dropped when only the path without it exists.
+fn link_path(url: &str, cwd: &Path) -> Option<PathBuf> {
+    let url = url.trim();
+    if let Some(rest) = url
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("file://"))
+        .map(|_| &url[7..])
+    {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        return Some(PathBuf::from(percent_decode(
+            rest.split(['?', '#']).next().unwrap_or(rest),
+        )));
+    }
+    // A scheme has no dot, so `main.rs:12` stays a path.
+    let scheme = url.split_once(':').is_some_and(|(s, _)| {
+        s.len() > 1
+            && s.starts_with(|c: char| c.is_ascii_alphabetic())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-'))
+    });
+    if url.is_empty() || url.starts_with('#') || scheme {
+        return None;
+    }
+    let full = |p: &str| match p.strip_prefix("~/") {
+        Some(rest) => config::home().join(rest),
+        None => cwd.join(p),
+    };
+    let path = full(url);
+    if path.exists() {
+        return Some(path);
+    }
+    let mut bare = url.split_once('#').map_or(url, |(p, _)| p);
+    for _ in 0..2 {
+        match bare.rsplit_once(':') {
+            Some((p, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => bare = p,
+            _ => break,
+        }
+    }
+    let bare = full(bare);
+    Some(if bare.exists() { bare } else { path })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit));
+        match hex {
+            Some(h) if b[i] == b'%' => {
+                out.push(u8::from_str_radix(std::str::from_utf8(h).unwrap(), 16).unwrap());
+                i += 3;
+            }
+            _ => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// An image opens in the viewer; any other file or folder is shown in Finder (the file
+/// manager on Linux) rather than opened, so a link can't launch an app or run a script.
+fn open_file<S: HasCore>(s: &mut S, path: &Path) {
+    if !path.exists() {
+        with_core(s, |core| {
+            core.toast(format!("No such file: {}", path.display()), "warning")
+        });
+        return;
+    }
+    let image = path.is_file()
+        && path.extension().is_some_and(|e| {
+            ["png", "jpg", "jpeg", "gif", "webp"]
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        });
+    if image && let Ok(shot) = Shot::from_file(path) {
+        s.view_shot(shot);
+        return;
+    }
+    let opened = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .spawn()
+    } else {
+        let folder = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        };
+        std::process::Command::new("xdg-open").arg(folder).spawn()
+    };
+    if let Err(e) = opened {
+        with_core(s, |core| {
+            core.toast(format!("Couldn’t show {}: {e}", path.display()), "error")
+        });
+    }
 }
 
 /// The first `chars` characters of `line`.

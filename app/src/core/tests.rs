@@ -485,3 +485,24 @@ fn image_sizes_come_from_their_headers() {
         Some((1920, 1080))
     );
 }
+
+#[test]
+fn a_last_updated_label_lasts_until_it_reads_differently() {
+    use crate::folders::{ago, ago_lasts};
+    use std::time::{Duration, SystemTime};
+    let at = SystemTime::UNIX_EPOCH;
+    for secs in [
+        0, 59, 60, 61, 3_599, 3_600, 86_399, 90_000, 1_209_599, 2_000_000,
+    ] {
+        let now = at + Duration::from_secs(secs) + Duration::from_millis(250);
+        let lasts = ago_lasts(at, now);
+        assert!(lasts > Duration::ZERO, "{secs}s");
+        let label = ago(at, now);
+        assert_eq!(
+            ago(at, now + lasts - Duration::from_millis(1)),
+            label,
+            "{secs}s"
+        );
+        assert_ne!(ago(at, now + lasts), label, "{secs}s");
+    }
+}

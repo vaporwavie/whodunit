@@ -106,3 +106,17 @@ pub fn ago(at: SystemTime, now: SystemTime) -> String {
         _ => format!("{}w", secs / 604_800),
     }
 }
+
+/// How long `ago(at, now)` keeps reading the same.
+pub fn ago_lasts(at: SystemTime, now: SystemTime) -> Duration {
+    let Ok(elapsed) = now.duration_since(at) else {
+        return at.duration_since(now).unwrap_or_default() + Duration::from_secs(60);
+    };
+    let unit = match elapsed.as_secs() {
+        0..3_600 => 60,
+        3_600..86_400 => 3_600,
+        86_400..1_209_600 => 86_400,
+        _ => 604_800,
+    };
+    Duration::from_secs((elapsed.as_secs() / unit + 1) * unit) - elapsed
+}

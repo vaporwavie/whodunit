@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rune::{Cx, El, Family, ImageCache, Key, KeyEvent, Spring, TextEdit, TextStyle, Tx, el, text};
 use rune_kit::diff::DiffState;
@@ -12,6 +12,7 @@ use rune_kit::shell::{self, PaneMotion, PaneState, SidebarToggle, SplitView, Too
 use rune_kit::{ControlSize, Kit};
 
 use crate::core::{Core, DialogKind, Leave, Shared, lock, score_key};
+use crate::folders;
 use crate::scoreboard::{self, Board};
 use crate::sprites;
 use crate::transcript::Shot;
@@ -95,6 +96,8 @@ pub struct Window {
     copied_code: HashMap<String, Instant>,
     /// The working timer's second as last drawn.
     ticked: Option<u64>,
+    /// Each sidebar row's last-updated label as last drawn.
+    ages: Vec<String>,
     window_focused: bool,
     /// Reduce Motion as the last view saw it, for `poll`, which has no `Cx`.
     reduced_motion: AtomicBool,
@@ -174,6 +177,7 @@ impl Window {
             diffs: HashMap::new(),
             copied_code: HashMap::new(),
             ticked: None,
+            ages: Vec::new(),
             window_focused: false,
             reduced_motion: AtomicBool::new(false),
             lanes: stage::LaneClock::default(),
@@ -441,6 +445,24 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
     if second != s.ticked {
         s.ticked = second;
         changed = true;
+    }
+    let wall = SystemTime::now();
+    let ages: Vec<String> = core
+        .sessions
+        .iter()
+        .map(|summary| folders::ago(summary.updated, wall))
+        .collect();
+    if ages != s.ages {
+        s.ages = ages;
+        changed = true;
+    }
+    if let Some(next) = core
+        .sessions
+        .iter()
+        .map(|summary| folders::ago_lasts(summary.updated, wall))
+        .min()
+    {
+        tx.wake_after(next + Duration::from_millis(10));
     }
     if let Some(started) = core.turn_started {
         let into = started.elapsed().subsec_millis() as u64;

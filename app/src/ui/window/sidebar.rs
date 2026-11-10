@@ -1,7 +1,7 @@
 //! The sidebar: New task and Scoreboard, then every session grouped Working, Idle and Ended.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use rune::{El, Icon, ScrollSpec, col};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarHeader, SidebarRow, SidebarSection};
@@ -35,8 +35,9 @@ fn session_row(
 ) -> El {
     let current = core.session_file.as_deref() == Some(summary.path.to_string_lossy().as_ref());
     let path = summary.path.clone();
+    let subtitle = summary.subtitle_at(SystemTime::now());
     let mut r = SidebarRow::new(summary.title.clone())
-        .subtitle(summary.subtitle())
+        .subtitle(subtitle.clone())
         .selected(current && s.page == Page::Chat)
         .on_select(move |s: &mut Window, tx| s.leave(Leave::Open(path.clone()), tx));
     // The role's and the agent's sprites, only once the run has ended and they can show.
@@ -74,7 +75,7 @@ fn session_row(
             summary.title,
             deal.role,
             config::agent_name_in(names, &deal.agent),
-            summary.subtitle()
+            subtitle
         ));
     }
     r.key(format!("session-{}", summary.path.display()))

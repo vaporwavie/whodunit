@@ -240,8 +240,9 @@ pub fn scene_dealing(shared: &Shared) {
     let mut core = lock(shared);
     sidebar(&mut core);
     core.t.week.deal = None;
-    core.pending_prompt =
-        Some("Research the usual module layout for Rust apps; my window.rs is past 2k lines.".into());
+    core.pending_prompt = Some(
+        "Research the usual module layout for Rust apps; my window.rs is past 2k lines.".into(),
+    );
     core.turn_started = Some(std::time::Instant::now());
 }
 
@@ -250,8 +251,9 @@ pub fn scene_fanning(shared: &Shared) {
     let mut core = lock(shared);
     sidebar(&mut core);
     core.t.week.deal = None;
-    core.pending_prompt =
-        Some("Research the usual module layout for Rust apps; my window.rs is past 2k lines.".into());
+    core.pending_prompt = Some(
+        "Research the usual module layout for Rust apps; my window.rs is past 2k lines.".into(),
+    );
     core.widgets.insert(
         "whodunit".into(),
         vec!["fan-out · A running · B done · C failed · 93s".into()],

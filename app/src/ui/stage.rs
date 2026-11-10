@@ -20,7 +20,7 @@ pub const REST: f32 = 0.9;
 pub const SETTLED: f32 = 60.0;
 
 const DEAL_H: f32 = 72.0;
-const SCAN_H: f32 = 9.0;
+const SCAN_H: f32 = 15.0;
 const BUS_H: f32 = 6.0;
 
 /// What the tail of a working chat shows.
@@ -175,9 +175,9 @@ const SEALED: u8 = 6;
 const RAIL: u8 = 7;
 
 /// Three lines of redacted text, written as the agent thinks.
-const THINK_H: f32 = 30.0;
+const THINK_H: f32 = 39.0;
 /// Two still lines: a thought the run hasn't revealed. Its size never follows the trace's.
-const SEALED_H: f32 = 18.0;
+const SEALED_H: f32 = 24.0;
 pub const RAIL_W: f32 = 3.0;
 
 /// A thought being written: scrambled lines, a cursor, scrolling up as they fill.
@@ -217,7 +217,8 @@ pub fn view(stage: &Stage, motion: Motion, age: impl Fn(&str) -> f32, k: &Kit) -
         Stage::Working => slot(k, motion, SCAN, 0, 0.0)
             .key("stage-scan")
             .w_full()
-            .h(SCAN_H),
+            .h(SCAN_H)
+            .label("Working"),
         Stage::Thinking => col(),
         Stage::Fanout(fanout) => {
             let lanes = fanout.lanes.iter().enumerate().map(|(index, lane)| {
@@ -279,7 +280,7 @@ struct Palette {
 }
 
 const LIGHT: Palette = Palette {
-    base: 0xa9b1ba,
+    base: 0x8794a0,
     accent: 0x0b9fae,
     alarm: 0xd92a6a,
     card_edge: 0x2f5f9f,
@@ -288,7 +289,7 @@ const LIGHT: Palette = Palette {
     strength: 0.9,
 };
 const DARK: Palette = Palette {
-    base: 0x56616b,
+    base: 0x77838e,
     accent: 0x45f0d8,
     alarm: 0xff4f8b,
     card_edge: 0xf7efe0,
@@ -410,9 +411,9 @@ fn scan(pt: vec2f, size: vec2f, cell: vec2u, rows: u32, t: f32) -> vec4f {
     let head = fract(t / 3.0) * span - 100.0;
     let behind = head - pt.x;
     var e = exp(behind / 2.5);
-    if (behind >= 0.0) { e = exp(-behind / 90.0); }
+    if (behind >= 0.0) { e = exp(-behind / 120.0); }
     var color = mix(p.base.rgb, p.accent.rgb, smoothstep(0.45, 0.95, e));
-    var lit = e * 0.9;
+    var lit = 0.12 + e * 0.88;
     if (lit <= bayer8(cell) && flick(cell, t, 9.0, 1u) < 0.035) {
         color = p.base.rgb;
         lit = 1.0;
@@ -462,15 +463,15 @@ fn bus(pt: vec2f, size: vec2f, cell: vec2u, t: f32, kind: u32) -> vec4f {
 }
 
 // Redacted text: words of scrambled glyph cells, laid on lines LINE tall every PITCH_LINE.
-const LINE: f32 = 6.0;
-const PITCH_LINE: f32 = 12.0;
+const LINE: f32 = 9.0;
+const PITCH_LINE: f32 = 15.0;
 
 fn glyphs(x: f32, line: i32, cell: vec2u, scramble: f32) -> bool {
     let at = x + f32(line) * 97.0;
     let word = floor(at / 22.0);
     let id = pcg(u32(i32(word) + 100000) * 13u + u32(line + 100000) * 7u);
     if (at - word * 22.0 > 8.0 + 11.0 * u01(id)) { return false; }
-    return u01(cell_hash(cell) ^ pcg(u32(scramble) + 11u)) < 0.62;
+    return u01(cell_hash(cell) ^ pcg(u32(scramble) + 11u)) < 0.84;
 }
 
 // A line's length, as a share of the room: paragraphs end on a short one.
@@ -481,11 +482,11 @@ fn line_len(line: i32, salt: u32) -> f32 {
 }
 
 fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
-    let room = min(size.x, 380.0);
+    let room = min(size.x, 440.0);
     if (pt.x > room) { return vec4f(0.0); }
-    // A line takes LINE_T seconds; the block scrolls up a line as the next begins.
+    // Start with two redacted lines; a new one writes in as the oldest scrolls away.
     let progress = t / 1.7;
-    let n = floor(progress);
+    let n = floor(progress) + 2.0;
     let f = fract(progress);
     let ease = smoothstep(0.0, 0.14, f);
     let top = size.y - PITCH_LINE * (n + 1.0) + PITCH_LINE * (1.0 - ease) + (PITCH_LINE - LINE);
@@ -499,12 +500,12 @@ fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
     if (pt.x > head) { return vec4f(0.0); }
     // The newest writing still glows; lines fade as they scroll off the top.
     let behind = head - pt.x;
-    let fade = smoothstep(0.0, PITCH_LINE, pt.y);
+    let fade = mix(0.4, 1.0, smoothstep(0.0, PITCH_LINE, pt.y));
     if (m == n && behind < 3.5 && f < 0.92) { return vec4f(p.accent.rgb, fade); }
     if (!glyphs(pt.x, line, cell, floor(t * 3.0))) { return vec4f(0.0); }
     var glow = 0.0;
     if (m == n) { glow = 1.0 - smoothstep(0.0, 48.0, behind); }
-    return vec4f(mix(p.base.rgb, p.accent.rgb, glow), (0.75 + 0.25 * glow) * fade);
+    return vec4f(mix(p.base.rgb, p.accent.rgb, glow), (0.95 + 0.05 * glow) * fade);
 }
 
 fn sealed(pt: vec2f, size: vec2f, cell: vec2u) -> vec4f {
@@ -547,7 +548,9 @@ fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     }
     // Scanlines: every other row runs dimmer, except on the cards.
     var lit = ink.a * p.extra.x;
-    if (kind != 0u && kind != 7u && (cell.y & 1u) == 1u) { lit *= 0.6; }
+    if (kind != 0u && kind != 7u && (cell.y & 1u) == 1u) {
+        lit *= select(0.6, 0.85, kind == 5u || kind == 6u);
+    }
     if (lit <= bayer8(cell)) { discard; }
     var color = ink.rgb;
     if (p.misc.z < 0.5) { color = to_linear(color); }

@@ -301,6 +301,25 @@ fn a_working_chat_shows_its_stage_until_it_ends() {
 }
 
 #[test]
+fn dot_art_replaces_the_generic_working_row() {
+    for scene in [
+        crate::fixtures::scene_working as fn(&Shared),
+        crate::fixtures::scene_thinking,
+    ] {
+        let shared = core(scene);
+        let rt = window(shared.clone());
+        assert!(!shows(&rt, "/working"));
+        assert!(parts::busy_line(&lock(&shared)).is_none());
+
+        lock(&shared)
+            .statuses
+            .insert("compaction".into(), "Compacting…".into());
+        let rt = window(shared);
+        assert!(shows(&rt, "/working"), "specific statuses still show");
+    }
+}
+
+#[test]
 fn a_live_thought_writes_itself_in_place_of_the_scanner() {
     let core = core(crate::fixtures::scene_thinking);
     let rt = window(core.clone());

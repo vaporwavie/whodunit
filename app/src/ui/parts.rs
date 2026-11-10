@@ -94,10 +94,7 @@ pub fn busy_line(core: &Core) -> Option<String> {
     if core.pending_prompt.is_some() && core.t.week.deal.is_none() {
         return Some("Classifying and dealing an agent…".to_owned());
     }
-    if !core.streaming {
-        return None;
-    }
-    Some("Working…".to_owned())
+    None
 }
 
 /// "8s", "1m 05s": the working timer, in tabular figures so it doesn't jitter.

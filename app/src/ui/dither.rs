@@ -36,13 +36,27 @@ impl Motion {
 
 /// How far up from the chat's bottom edge the tide's slot reaches; the water sits lower.
 pub const TIDE_H: f32 = 340.0;
-/// The tide comes in fast and goes out slow, as the shore's swash does.
-const TIDE_IN: f32 = 1.4;
+/// The tide comes in on a stiff spring, quick with a small overshoot, and goes out slow, falling
+/// away from rest as the shore's swash does: out of sight in `TIDE_OUT` seconds.
+const RISE: f32 = 17.0;
+const RISE_DAMPING: f32 = 0.68;
 const TIDE_OUT: f32 = 2.2;
 /// How long the tide takes to change colour.
 const SHADE: f32 = 0.45;
 /// Steps of a shade in the payload: six bits each.
 const SHADE_STEPS: f32 = 63.0;
+/// A thought fires the tide's net once this many bytes of it have come in, at most this often.
+const FIRE_BYTES: usize = 12;
+const FIRE_GAP: f64 = 0.08;
+/// A firing's spike dies fast; the net's activity lingers a while longer.
+const SPIKE_DECAY: f32 = 0.14;
+const ACTIVITY_DECAY: f32 = 0.9;
+/// A thought heats up over this many bytes, or this many seconds when it streams no text.
+const HEAT_BYTES: f32 = 3000.0;
+const HEAT_SECONDS: f32 = 45.0;
+const HEAT_EASE: f32 = 0.6;
+/// Distinct firing patterns; ten bits of the payload.
+const SEEDS: u32 = 1024;
 
 /// What the tide says about the run: ink while it works, haze while it thinks, red when a
 /// provider error or a failure troubles it.
@@ -61,31 +75,53 @@ impl Mood {
             Mood::Working => Shade::default(),
             Mood::Thinking => Shade {
                 think: 1.0,
-                trouble: 0.0,
+                ..Shade::default()
             },
             Mood::Trouble => Shade {
-                think: 0.0,
                 trouble: 1.0,
+                ..Shade::default()
             },
         }
     }
 }
 
-/// The tide's colour between ink, haze (`think`) and red (`trouble`), each 0 to 1.
+/// The tide's colour between ink, haze (`think`) and red (`trouble`), each 0 to 1. `heat` is how
+/// far the current thought has gone, and deepens the haze.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Shade {
     pub think: f32,
     pub trouble: f32,
+    pub heat: f32,
+}
+
+/// The live thought the tide reacts to: `key` tells one thinking block from the next.
+#[derive(Clone, Copy)]
+pub struct Thought<'a> {
+    pub key: usize,
+    pub text: &'a str,
+}
+
+/// The tide's net firing: `spike` from the latest burst of reasoning, `activity` from the bursts
+/// lately, both 0 to 1, and `seed`, from the burst's text, says which neurons fire.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pulse {
+    pub spike: f32,
+    pub activity: f32,
+    pub seed: u32,
+}
+
+fn step(v: f32, steps: f32) -> u32 {
+    (v.clamp(0.0, 1.0) * steps).round() as u32
 }
 
 /// The first payload float: dark, then motion, then whether it's the tide, then its shade.
 fn flags(dark: bool, motion: Motion, tide: bool, shade: Shade) -> f32 {
-    let step = |v: f32| (v.clamp(0.0, 1.0) * SHADE_STEPS).round() as u32;
     let bits = u32::from(dark)
         | (motion as u32) << 1
         | u32::from(tide) << 3
-        | step(shade.think) << 4
-        | step(shade.trouble) << 10;
+        | step(shade.think, SHADE_STEPS) << 4
+        | step(shade.trouble, SHADE_STEPS) << 10
+        | step(shade.heat, SHADE_STEPS) << 16;
     bits as f32
 }
 
@@ -99,8 +135,41 @@ fn unflag(data: f32) -> (bool, Motion, bool, Shade) {
         Shade {
             think: unstep(bits >> 4),
             trouble: unstep(bits >> 10),
+            heat: unstep(bits >> 16),
         },
     )
+}
+
+/// The pulse in one payload float: ten bits of seed, seven of spike, six of activity.
+fn pack_pulse(pulse: Pulse) -> f32 {
+    ((pulse.seed % SEEDS) | (step(pulse.spike, 127.0) << 10) | (step(pulse.activity, 63.0) << 17))
+        as f32
+}
+
+fn unpack_pulse(data: f32) -> Pulse {
+    let bits = data as u32;
+    Pulse {
+        seed: bits % SEEDS,
+        spike: ((bits >> 10) & 127) as f32 / 127.0,
+        activity: ((bits >> 17) & 63) as f32 / 63.0,
+    }
+}
+
+/// The composer's column in one payload float, in whole points: its left inset over its top.
+/// Negative before the first layout.
+fn pack_dock(dock: Option<[f32; 2]>) -> f32 {
+    let point = |v: f32| v.round().clamp(0.0, 4095.0) as u32;
+    dock.map_or(-1.0, |[inset, top]| {
+        (point(inset) << 12 | point(top)) as f32
+    })
+}
+
+fn unpack_dock(data: f32) -> [f32; 2] {
+    if data < 0.0 {
+        return [-1.0, -1.0];
+    }
+    let bits = data as u32;
+    [(bits >> 12) as f32, (bits & 4095) as f32]
 }
 
 /// Fills its parent, and fades out when the chat gets its first message.
@@ -108,18 +177,17 @@ pub fn slot(dark: bool, motion: Motion) -> El {
     effect(MARK)
         .key("dither")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .effect_data([flags(dark, motion, false, Shade::default()), 0.0, 0.0, 0.0])
+        .effect_data([flags(dark, motion, false, Shade::default()), 0.0, -1.0, 0.0])
         .transition(
             Transition::asymmetric(Transition::none(), Transition::opacity())
                 .springs(SpringPair::new(Spring::NONE, Spring::new(0.15, 0.0))),
         )
 }
 
-/// The shore's water along the bottom of a working chat. `tide` says how far it has come in and
-/// its colour. `dock` is the composer's column as `[left inset, top]` in points from the slot's
-/// top-left, kept clear, with the slot's own edges; `None` before the first layout.
+/// The shore's water along the bottom of a working chat. `tide` says how far it has come in, its
+/// colour and how its net fires. `dock` is the composer's column as `[left inset, top]` in points
+/// from the slot's top-left, kept clear, with the slot's own edges; `None` before the first layout.
 pub fn tide(dark: bool, motion: Motion, tide: &Tide, dock: Option<[f32; 2]>) -> El {
-    let [inset, top] = dock.unwrap_or([-1.0, -1.0]);
     let shade = tide.shade();
     let label = if shade.trouble > 0.5 {
         "Trouble"
@@ -132,28 +200,58 @@ pub fn tide(dark: bool, motion: Motion, tide: &Tide, dock: Option<[f32; 2]>) -> 
         .key("tide")
         .pin(Some(0.0), None, Some(0.0), Some(0.0))
         .h(TIDE_H)
-        .effect_data([flags(dark, motion, true, shade), tide.level(), inset, top])
+        .effect_data([
+            flags(dark, motion, true, shade),
+            tide.level(),
+            pack_dock(dock),
+            pack_pulse(tide.pulse()),
+        ])
         .label(label)
         .transition(Transition::none())
 }
 
-/// How far the tide has come in, from 0 (out of sight below the chat) to 1, and its colour. It
-/// moves toward whether the chat works: in while it does, back out when the turn ends. Its shade
-/// follows the mood while it's in, and holds while it drains, so a failed turn goes out red.
+/// How far the tide has come in, from 0 (out of sight below the chat) to 1, its colour and its
+/// net. It moves toward whether the chat works: in while it does, back out when the turn ends. Its
+/// shade follows the mood while it's in, and holds while it drains, so a failed turn goes out red.
+/// While the agent thinks, each burst of the thought fires the net, and the thought's length heats
+/// the haze.
 #[derive(Default)]
 pub struct Tide {
     level: f32,
+    /// Level per second.
+    speed: f32,
     shade: Shade,
     target: Shade,
+    pulse: Pulse,
+    /// The thinking block being read, how many of its bytes are read, and how many of those
+    /// haven't fired yet, folded into `hash`.
+    thought: Option<usize>,
+    read: usize,
+    unfired: usize,
+    hash: u32,
+    fired: f64,
+    began: f64,
     last: Option<f64>,
 }
 
 impl Tide {
     /// Lands on `working` in `mood` with no motion: another chat, or a chat reloaded.
     pub fn snap(&mut self, working: bool, mood: Mood) {
+        self.thought = None;
+        self.target.heat = 0.0;
+        self.land(working, mood);
+    }
+
+    /// Lands where the water and its colour are going, without a spike in it.
+    fn land(&mut self, working: bool, mood: Mood) {
         self.level = f32::from(u8::from(working));
-        self.shade = mood.shade();
-        self.target = self.shade;
+        self.speed = 0.0;
+        self.target = Shade {
+            heat: self.target.heat,
+            ..mood.shade()
+        };
+        self.shade = self.target;
+        self.pulse = Pulse::default();
         self.last = None;
     }
 
@@ -163,31 +261,139 @@ impl Tide {
         self.level = level.clamp(0.0, 1.0);
     }
 
-    /// `now` is the UI clock in seconds.
-    pub fn tick(&mut self, now: f64, working: bool, mood: Mood, motion: Motion) {
+    /// Holds a thought `heat` of the way along, its net firing as `pulse`, for snapshots.
+    pub fn hold_thought(&mut self, heat: f32, pulse: Pulse) {
+        self.shade.heat = heat;
+        self.target.heat = heat;
+        self.pulse = pulse;
+    }
+
+    /// `now` is the UI clock in seconds; `thought` is the live message's thinking, if it thinks.
+    pub fn tick(
+        &mut self,
+        now: f64,
+        working: bool,
+        mood: Mood,
+        thought: Option<Thought>,
+        motion: Motion,
+    ) {
         let elapsed = self.last.map_or(0.0, |last| (now - last).max(0.0) as f32);
         self.last = Some(now);
+        self.read(now, thought);
         match motion {
             // Held water would say a finished chat still works, so nothing moves unseen.
-            Motion::Still | Motion::Paused => return self.snap(working, mood),
-            Motion::Live if working => self.level = (self.level + elapsed / TIDE_IN).min(1.0),
-            Motion::Live => self.level = (self.level - elapsed / TIDE_OUT).max(0.0),
+            // Unfocused, the thought's colour and its last firing hold where they were.
+            Motion::Paused => {
+                let (heat, pulse) = (self.shade.heat, self.pulse);
+                self.land(working, mood);
+                self.shade.heat = heat;
+                self.pulse = pulse;
+                return;
+            }
+            Motion::Still => {
+                self.land(working, mood);
+                self.shade.heat = self.target.heat;
+                return;
+            }
+            Motion::Live => self.flow(working, elapsed),
         }
         if working || self.level == 0.0 {
-            self.target = mood.shade();
+            self.target = Shade {
+                heat: self.target.heat,
+                ..mood.shade()
+            };
         }
         if self.level == 0.0 {
             self.shade = self.target;
         }
         let step = elapsed / SHADE;
         let toward = |from: f32, to: f32| from + (to - from).clamp(-step, step);
+        let ease = 1.0 - (-elapsed / HEAT_EASE).exp();
         self.shade = Shade {
             think: toward(self.shade.think, self.target.think),
             trouble: toward(self.shade.trouble, self.target.trouble),
+            heat: self.shade.heat + (self.target.heat - self.shade.heat) * ease,
         };
+        if (self.shade.heat - self.target.heat).abs() < 0.01 {
+            self.shade.heat = self.target.heat;
+        }
+        self.pulse.spike *= (-elapsed / SPIKE_DECAY).exp();
+        self.pulse.activity *= (-elapsed / ACTIVITY_DECAY).exp();
+        if self.pulse.activity < 0.01 {
+            self.pulse.spike = 0.0;
+            self.pulse.activity = 0.0;
+        }
+        if now - self.fired >= FIRE_GAP && self.unfired >= FIRE_BYTES {
+            self.fire(now);
+        }
     }
 
-    /// Linear in time; the shader eases where the water is (see `out` there).
+    /// Reads what the thought has added since the last tick, and how far along it is.
+    fn read(&mut self, now: f64, thought: Option<Thought>) {
+        let Some(Thought { key, text }) = thought else {
+            self.thought = None;
+            self.unfired = 0;
+            self.target.heat = 0.0;
+            return;
+        };
+        if self.thought != Some(key) || text.len() < self.read {
+            // A thought already well under way when first seen doesn't fire for what came before.
+            let fresh = text.len() <= 4 * FIRE_BYTES;
+            self.thought = Some(key);
+            self.read = if fresh { 0 } else { text.len() };
+            self.unfired = 0;
+            self.began = now;
+        }
+        let new = &text.as_bytes()[self.read.min(text.len())..];
+        self.hash = new.iter().fold(self.hash, |hash, &byte| {
+            (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+        });
+        self.unfired += new.len();
+        self.read = text.len();
+        let along = text.len() as f32 / HEAT_BYTES + (now - self.began) as f32 / HEAT_SECONDS;
+        self.target.heat = 1.0 - (-along).exp();
+    }
+
+    /// A burst of reasoning fires the net: harder the more of it there was.
+    fn fire(&mut self, now: f64) {
+        let burst = self.unfired as f32;
+        self.pulse = Pulse {
+            spike: self.pulse.spike.max(0.55 + burst / 120.0).min(1.0),
+            activity: (self.pulse.activity + burst / 240.0).min(1.0),
+            seed: (self.hash ^ self.hash >> 16) % SEEDS,
+        };
+        self.unfired = 0;
+        self.fired = now;
+    }
+
+    /// In on a spring toward 1, overshooting a little; out falling from rest, slow and then fast.
+    fn flow(&mut self, working: bool, elapsed: f32) {
+        let fall = 2.0 / (TIDE_OUT * TIDE_OUT);
+        let mut left = elapsed;
+        while left > 0.0 {
+            let dt = left.min(0.004);
+            left -= dt;
+            let accel = if working {
+                RISE * RISE * (1.0 - self.level) - 2.0 * RISE_DAMPING * RISE * self.speed
+            } else {
+                -fall
+            };
+            self.speed += accel * dt;
+            self.level = (self.level + self.speed * dt).max(0.0);
+            if self.level == 0.0 {
+                self.speed = 0.0;
+                if !working {
+                    break;
+                }
+            }
+        }
+        if working && (self.level - 1.0).abs() < 0.001 && self.speed.abs() < 0.01 {
+            self.level = 1.0;
+            self.speed = 0.0;
+        }
+    }
+
+    /// Eased by its spring or its fall; past 1 while it overshoots.
     pub fn level(&self) -> f32 {
         self.level
     }
@@ -196,9 +402,17 @@ impl Tide {
         self.shade
     }
 
-    /// Coming in, going out, or changing colour.
+    pub fn pulse(&self) -> Pulse {
+        self.pulse
+    }
+
+    /// Coming in, going out, changing colour or firing.
     pub fn moving(&self) -> bool {
-        (self.level > 0.0 && self.level < 1.0) || (self.level > 0.0 && self.shade != self.target)
+        self.level > 0.0
+            && (self.level != 1.0
+                || self.speed != 0.0
+                || self.shade != self.target
+                || self.pulse.activity > 0.0)
     }
 }
 
@@ -206,25 +420,55 @@ impl Tide {
 mod tests {
     use super::*;
 
+    /// Ticks every frame from `from` to `to` seconds.
+    fn run(tide: &mut Tide, from: f64, to: f64, working: bool, thought: Option<Thought>) {
+        let mood = if thought.is_some() {
+            Mood::Thinking
+        } else {
+            Mood::Working
+        };
+        let mut now = from;
+        while now <= to {
+            tide.tick(now, working, mood, thought, Motion::Live);
+            now += FRAME.as_secs_f64();
+        }
+    }
+
     #[test]
-    fn the_tide_comes_in_faster_than_it_goes_and_lands_when_not_live() {
+    fn the_tide_snaps_in_overshoots_a_little_and_drains_slowly() {
         let mut tide = Tide::default();
-        let working = Mood::Working;
-        tide.tick(0.0, true, working, Motion::Live);
-        tide.tick(TIDE_IN as f64 / 2.0, true, working, Motion::Live);
-        assert!((tide.level() - 0.5).abs() < 0.001);
-        tide.tick(
-            (TIDE_IN / 2.0 + TIDE_OUT / 4.0) as f64,
-            false,
-            working,
-            Motion::Live,
+        let mut peak: f32 = 0.0;
+        let mut now = 0.0;
+        while now < 0.25 {
+            tide.tick(now, true, Mood::Working, None, Motion::Live);
+            peak = peak.max(tide.level());
+            now += FRAME.as_secs_f64();
+        }
+        assert!(tide.level() > 0.9, "in within a quarter second");
+        run(&mut tide, now, 1.0, true, None);
+        peak = peak.max(tide.level());
+        assert!(peak > 1.0 && peak < 1.1, "a small overshoot: {peak}");
+        assert_eq!(tide.level(), 1.0, "and it settles");
+        assert!(!tide.moving());
+        run(&mut tide, 1.0, 1.0 + f64::from(TIDE_OUT) / 2.0, false, None);
+        assert!(
+            tide.level() > 0.5,
+            "out is slower than in, and slow to start"
         );
-        assert!((tide.level() - 0.25).abs() < 0.001, "out is slower than in");
-        tide.tick(10.0, true, working, Motion::Paused);
-        assert_eq!(tide.level(), 1.0, "unfocused, it lands");
-        tide.tick(11.0, false, working, Motion::Still);
+        run(&mut tide, 2.2, 1.1 + f64::from(TIDE_OUT), false, None);
         assert_eq!(tide.level(), 0.0);
-        tide.tick(30.0, true, working, Motion::Live);
+    }
+
+    #[test]
+    fn the_tide_lands_when_not_live() {
+        let mut tide = Tide::default();
+        tide.tick(0.0, true, Mood::Working, None, Motion::Live);
+        tide.tick(0.1, true, Mood::Working, None, Motion::Live);
+        tide.tick(10.0, true, Mood::Working, None, Motion::Paused);
+        assert_eq!(tide.level(), 1.0, "unfocused, it lands");
+        tide.tick(11.0, false, Mood::Working, None, Motion::Still);
+        assert_eq!(tide.level(), 0.0);
+        tide.tick(30.0, true, Mood::Working, None, Motion::Live);
         assert_eq!(
             tide.level(),
             0.0,
@@ -235,18 +479,18 @@ mod tests {
     #[test]
     fn the_tide_changes_colour_while_in_and_drains_in_the_colour_it_had() {
         let mut tide = Tide::default();
-        tide.tick(0.0, true, Mood::Working, Motion::Live);
-        tide.tick(TIDE_IN as f64, true, Mood::Thinking, Motion::Live);
+        tide.tick(0.0, true, Mood::Working, None, Motion::Live);
+        tide.tick(1.0, true, Mood::Thinking, None, Motion::Live);
         assert_eq!(tide.shade().think, 1.0, "a long step lands on haze");
-        tide.tick(TIDE_IN as f64 + 0.1, true, Mood::Trouble, Motion::Live);
+        tide.tick(1.1, true, Mood::Trouble, None, Motion::Live);
         let shade = tide.shade();
         assert!(shade.think < 1.0 && shade.trouble > 0.0 && shade.trouble < 1.0);
         assert!(tide.moving(), "it keeps drawing while the colour turns");
-        tide.tick(TIDE_IN as f64 + 1.0, true, Mood::Trouble, Motion::Live);
+        tide.tick(2.0, true, Mood::Trouble, None, Motion::Live);
         assert_eq!(tide.shade(), Mood::Trouble.shade());
-        tide.tick(TIDE_IN as f64 + 1.5, false, Mood::Working, Motion::Live);
+        tide.tick(2.5, false, Mood::Working, None, Motion::Live);
         assert_eq!(tide.shade(), Mood::Trouble.shade(), "it drains red");
-        tide.tick(30.0, false, Mood::Working, Motion::Live);
+        run(&mut tide, 2.5, 6.0, false, None);
         assert_eq!(tide.level(), 0.0);
         assert_eq!(
             tide.shade(),
@@ -256,7 +500,62 @@ mod tests {
     }
 
     #[test]
-    fn flags_round_trip() {
+    fn a_thought_fires_the_net_as_it_streams_and_heats_as_it_runs() {
+        let mut tide = Tide::default();
+        run(&mut tide, 0.0, 1.0, true, None);
+        let text = "Which README sections name the store? ".repeat(200);
+        let thought = |len: usize| {
+            Some(Thought {
+                key: 1,
+                text: &text[..len],
+            })
+        };
+        run(&mut tide, 1.0, 1.05, true, thought(4));
+        assert_eq!(tide.pulse().spike, 0.0, "a few bytes don't fire");
+        tide.tick(1.1, true, Mood::Thinking, thought(80), Motion::Live);
+        let first = tide.pulse();
+        assert!(first.spike > 0.5 && first.activity > 0.0, "{first:?}");
+        tide.tick(1.15, true, Mood::Thinking, thought(160), Motion::Live);
+        assert_eq!(tide.pulse().seed, first.seed, "bursts are spaced");
+        tide.tick(1.2, true, Mood::Thinking, thought(240), Motion::Live);
+        assert_ne!(tide.pulse().seed, first.seed, "a new burst fires others");
+        assert!(tide.moving(), "it keeps drawing while the net fires");
+
+        run(&mut tide, 1.2, 2.5, true, thought(240));
+        assert!(tide.pulse().spike < 0.01, "a spike dies fast without text");
+        let warm = tide.shade().heat;
+        run(&mut tide, 2.5, 6.0, true, thought(text.len()));
+        let hot = tide.shade().heat;
+        assert!(warm < hot && hot < 1.0, "{warm} then {hot}");
+
+        run(&mut tide, 6.0, 9.0, true, None);
+        assert_eq!(
+            tide.shade().heat,
+            0.0,
+            "the haze cools when the thought ends"
+        );
+        let quiet = tide.pulse();
+        assert!(
+            quiet.spike == 0.0 && quiet.activity == 0.0,
+            "and the net goes quiet"
+        );
+    }
+
+    #[test]
+    fn a_thought_seen_under_way_does_not_fire_for_what_came_before() {
+        let mut tide = Tide::default();
+        let text = "a long thought ".repeat(100);
+        let thought = Some(Thought {
+            key: 7,
+            text: &text,
+        });
+        run(&mut tide, 0.0, 0.5, true, thought);
+        assert_eq!(tide.pulse().spike, 0.0);
+        assert!(tide.shade().heat > 0.3, "but it's as warm as it is long");
+    }
+
+    #[test]
+    fn payloads_round_trip() {
         let shades = [
             Shade::default(),
             Mood::Thinking.shade(),
@@ -264,6 +563,7 @@ mod tests {
             Shade {
                 think: 20.0 / SHADE_STEPS,
                 trouble: 41.0 / SHADE_STEPS,
+                heat: 1.0,
             },
         ];
         for dark in [false, true] {
@@ -274,10 +574,21 @@ mod tests {
                         assert!(d == dark && m == motion && t == tide);
                         assert!((s.think - shade.think).abs() < 1e-6);
                         assert!((s.trouble - shade.trouble).abs() < 1e-6);
+                        assert!((s.heat - shade.heat).abs() < 1e-6);
                     }
                 }
             }
         }
+        let pulse = Pulse {
+            spike: 1.0,
+            activity: 1.0,
+            seed: SEEDS - 1,
+        };
+        assert_eq!(unpack_pulse(pack_pulse(pulse)), pulse);
+        assert_eq!(unpack_pulse(pack_pulse(Pulse::default())), Pulse::default());
+        assert_eq!(unpack_dock(pack_dock(Some([4095.0, 4095.0]))), [4095.0; 2]);
+        assert_eq!(unpack_dock(pack_dock(Some([180.4, 212.6]))), [180.0, 213.0]);
+        assert_eq!(unpack_dock(pack_dock(None)), [-1.0, -1.0]);
     }
 }
 
@@ -360,6 +671,32 @@ const HAZE_DARK: Palette = Palette {
     speck_dim: 0.8,
     strength: 1.0,
 };
+/// The haze a long thought heats to: deeper and more saturated on light, brighter on dark, its
+/// sparks near white.
+const HOT_LIGHT: Palette = Palette {
+    stops: [
+        (-200.0, 0x8a5cf6),
+        (-60.0, 0x6a2ff2),
+        (-12.0, 0x4f12e8),
+        (0.0, 0x3f06d6),
+        (28.0, 0x9a78fb),
+    ],
+    foam: 0x8f1dff,
+    speck_dim: 1.0,
+    strength: 1.0,
+};
+const HOT_DARK: Palette = Palette {
+    stops: [
+        (-200.0, 0x7a3df0),
+        (-60.0, 0x9a5cff),
+        (-12.0, 0xbb8fff),
+        (0.0, 0xd2b8ff),
+        (28.0, 0x9c66ff),
+    ],
+    foam: 0xf4eeff,
+    speck_dim: 0.9,
+    strength: 1.0,
+};
 const RED_LIGHT: Palette = Palette {
     stops: [
         (-200.0, 0xf09093),
@@ -385,14 +722,15 @@ const RED_DARK: Palette = Palette {
     strength: 1.0,
 };
 
-/// The tide's palette at `shade`: ink, toward haze, then toward red.
+/// The tide's palette at `shade`: ink, toward haze heated by the thought, then toward red.
 fn tide_palette(dark: bool, shade: Shade) -> Palette {
-    let (ink, haze, red) = if dark {
-        (&TIDE_DARK, &HAZE_DARK, &RED_DARK)
+    let (ink, haze, hot, red) = if dark {
+        (&TIDE_DARK, &HAZE_DARK, &HOT_DARK, &RED_DARK)
     } else {
-        (&TIDE_LIGHT, &HAZE_LIGHT, &RED_LIGHT)
+        (&TIDE_LIGHT, &HAZE_LIGHT, &HOT_LIGHT, &RED_LIGHT)
     };
-    mix(&mix(ink, haze, shade.think), red, shade.trouble)
+    let haze = mix(haze, hot, shade.heat);
+    mix(&mix(ink, &haze, shade.think), red, shade.trouble)
 }
 
 fn mix(a: &Palette, b: &Palette, t: f32) -> Palette {
@@ -425,12 +763,16 @@ struct P {
     misc: vec4f,
     // pass origin x and y, speck dimming, tide
     origin: vec4f,
+    // foam colour, and whether the clock runs
     foam: vec4f,
     // colour, and where across the band it sits
     stops: array<vec4f, 5>,
     // the tide's level, the composer column's left inset and top (negative before layout), and
     // how far it has turned to thinking
     tide: vec4f,
+    // its net: how far the thought has gone, the latest burst's spike, the bursts lately, and the
+    // burst's seed
+    net: vec4f,
 }
 var<immediate> p: P;
 
@@ -477,6 +819,63 @@ fn ramp(d: f32) -> vec3f {
     return p.stops[4].rgb;
 }
 
+// The tide's net: rows of neurons along the band, `SPAN` apart, the first on the crest itself
+// (layer -1) and the rest deeper under it, each row offset half a span from the one above.
+const SPAN: f32 = 54.0;
+const LAYER: f32 = 22.0;
+
+// Neuron `j` of layer `k`: how far along the band, how deep under the crest, and how hard it fires.
+// A burst of reasoning fires a few, picked by its text; deeper layers answer to the bursts lately
+// as much as to the latest. Now and then one fires on its own, so a quiet thought still hums.
+fn neuron(k: i32, j: i32, t: f32) -> vec3f {
+    let id = pcg(u32(j + 65536) * 4u + u32(k + 1));
+    let x = (f32(j) + 0.5 * f32(k + 1) + 0.2 + 0.6 * u01(id)) * SPAN;
+    let depth = select(0.0, 18.0 + LAYER * f32(k) + 8.0 * (u01(id + 3u) - 0.5), k >= 0);
+    let seed = u32(p.net.w);
+    let picked = u01(id ^ pcg(seed + 101u)) < 0.38;
+    let burst = select(0.0, 0.5 + 0.5 * u01(id ^ pcg(seed + 7u)), picked);
+    var a = burst * mix(p.net.y, p.net.z, f32(k + 1) / 3.0);
+    let cycle = t * 1.4 + u01(id + 9u) * 17.0;
+    let own = select(0.0, exp(-fract(cycle) * 6.0), u01(id ^ pcg(u32(floor(cycle)))) < 0.1);
+    a = max(a, own * 0.55 * p.foam.w * (1.0 - p.net.z));
+    return vec3f(x, depth, a);
+}
+
+fn to_segment(q: vec2f, a: vec2f, b: vec2f) -> f32 {
+    let ab = b - a;
+    let s = clamp(dot(q - a, ab) / dot(ab, ab), 0.0, 1.0);
+    return length(q - a - ab * s);
+}
+
+// The net under the crest at `q` (along the band, depth under the line): how lit, and how much
+// of it fires. Each neuron wires to the two nearest in the row below; a wire carries a firing
+// down when both its ends fire.
+fn net(q: vec2f, t: f32) -> vec2f {
+    let k = clamp(i32(floor((q.y - 18.0) / LAYER)), -1, 1);
+    let top = i32(floor(q.x / SPAN - 0.5 * f32(k + 1)));
+    var lit = 0.0;
+    var fire = 0.0;
+    for (var dj = -1; dj <= 1; dj++) {
+        let a = neuron(k, top + dj, t);
+        if (k >= 0) {
+            let node = smoothstep(4.8, 2.4, length(q - a.xy));
+            lit = max(lit, node * (0.45 + 0.55 * a.z));
+            fire = max(fire, node * a.z);
+        }
+        for (var c = -1; c <= 0; c++) {
+            let b = neuron(k + 1, top + dj + c, t);
+            let node = smoothstep(4.8, 2.4, length(q - b.xy));
+            lit = max(lit, node * (0.45 + 0.55 * b.z));
+            fire = max(fire, node * b.z);
+            let carried = sqrt(a.z * b.z);
+            let wire = smoothstep(1.7, 0.5, to_segment(q, a.xy, b.xy));
+            lit = max(lit, wire * (0.12 + 0.88 * carried));
+            fire = max(fire, wire * carried);
+        }
+    }
+    return vec2f(lit, fire);
+}
+
 fn to_linear(c: vec3f) -> vec3f {
     return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045));
 }
@@ -508,18 +907,33 @@ fn to_linear(c: vec3f) -> vec3f {
     // The swash breaks along the shore: in fast, out slow. The tide's comes quicker.
     let phase = select(fract((t - x / 700.0) / 7.0), fract((t * 1.6 - x / 900.0) / 7.0), tide);
     let surge = smoothstep(0.0, 0.16, phase) * (1.0 - smoothstep(0.16, 1.0, phase));
+    let think = p.tide.w;
+    let heat = p.net.x;
     var d: f32;
+    // Under the crest at rest, without its spikes: where the net hangs.
+    var under = vec2f(0.0);
+    var jag = 0.0;
     if (tide) {
-        // The sea lies below the line, which rests clear above the composer, a little higher and
-        // rougher while the agent thinks. Going out, the line sinks below the slot, foam and spray
-        // with it. Squared, it crosses the hidden part behind the composer quickly: it slows as it
-        // comes in, and gathers pace as it goes out.
-        let think = p.tide.w;
-        let rest = dock - 40.0 - 14.0 * think;
-        let away = 1.0 - p.tide.x;
-        let out = away * away * (h - rest + 110.0);
-        let line = rest + out - (0.55 + 0.2 * think) * ripple - (14.0 + 6.0 * think) * surge;
-        d = line - y;
+        // The sea lies below the line, which rests clear above the composer, higher and rougher
+        // while the agent thinks, and higher still the longer the thought runs. Going out, the line
+        // sinks below the slot, foam and spray with it; the level comes eased, overshooting a
+        // little as it comes in.
+        let rest = dock - 46.0 - think * (22.0 + 22.0 * heat);
+        let out = (1.0 - p.tide.x) * (h - rest + 110.0);
+        let base = rest + out - (0.55 + 0.25 * think) * ripple - (14.0 + 8.0 * think) * surge;
+        // While it thinks, the crest's neurons fire as needles off the line, a dip either side.
+        if (think > 0.0) {
+            let j = i32(floor(x / SPAN));
+            for (var dj = -1; dj <= 1; dj++) {
+                let n = neuron(-1, j + dj, t);
+                let off = abs(x - n.x);
+                let r = max(0.0, 1.0 - off / (7.0 + 9.0 * n.z));
+                jag += n.z * (r * r - 0.22 * exp(-pow((off - 20.0) / 7.0, 2.0)));
+            }
+            jag *= think;
+            under = vec2f(x, y - base);
+        }
+        d = base - think * (24.0 + 28.0 * heat) * jag - y;
     } else {
         let line = 36.0 + slope * x + ripple + 36.0 * surge;
         d = (y - line) / sqrt(1.0 + slope * slope);
@@ -530,8 +944,9 @@ fn to_linear(c: vec3f) -> vec3f {
         // A solid crest a few dots deep, the water thinning under it toward the composer, and
         // nothing above but the foam.
         let crest = exp(-pow((d + 4.0) / 5.5, 2.0));
-        let body = smoothstep(-110.0, -8.0, d) * (1.0 - smoothstep(-3.0, 1.0, d));
-        lit = max(crest, 0.5 * body * body);
+        let body = smoothstep(-110.0 - 30.0 * heat, -8.0, d) * (1.0 - smoothstep(-3.0, 1.0, d));
+        // While it thinks the water thins, so the net in it reads.
+        lit = max(crest, (0.5 - think * (0.3 - 0.08 * heat)) * body * body);
     } else {
         let above = smoothstep(-260.0, -10.0, d);
         let below = 1.0 - smoothstep(6.0, 64.0, d);
@@ -546,6 +961,16 @@ fn to_linear(c: vec3f) -> vec3f {
     let foam = exp(-pow((d - crown) / spread, 2.0)) * surge * smoothstep(0.35, 0.75, froth);
     lit = max(lit, foam);
     color = mix(color, p.foam.rgb, clamp(foam * 1.6, 0.0, 1.0));
+    if (tide && think > 0.0) {
+        // A firing needle flares at the crest; the net lights under it, wires carrying it down.
+        let flare = clamp(jag * 2.0, 0.0, 1.0) * exp(-pow((d + 3.0) / 6.0, 2.0));
+        color = mix(color, p.foam.rgb, flare);
+        if (under.y > 6.0) {
+            let n = net(under, t) * think * smoothstep(6.0, 14.0, under.y);
+            lit = max(lit, n.x);
+            color = mix(color, mix(ramp(-12.0), p.foam.rgb, n.y), smoothstep(0.0, 0.1, n.x));
+        }
+    }
 
     var bottom = 1.0 - smoothstep(h - 90.0, h - 10.0, y);
     if (tide) {
@@ -567,7 +992,11 @@ fn to_linear(c: vec3f) -> vec3f {
         let cycle = t * 0.8 + u01(id) * 9.0;
         var specks = 0.03 * (1.0 - smoothstep(220.0, 400.0, y)) * bottom;
         // The tide's spray flies just above the water, never off the slot's top edge.
-        if (tide) { specks = 0.012 * exp(-pow((d - 12.0) / 12.0, 2.0)) * smoothstep(0.0, 30.0, y) * bottom; }
+        // It flies thicker while the net fires.
+        if (tide) {
+            let spray = 0.012 * (1.0 + think * (1.0 + 4.0 * p.net.z));
+            specks = spray * exp(-pow((d - 12.0) / 12.0, 2.0)) * smoothstep(0.0, 30.0, y) * bottom;
+        }
         if (u01(id ^ pcg(u32(floor(cycle)))) >= specks) { discard; }
         let q = fract(cycle);
         alpha = smoothstep(0.0, 0.15, q) * (1.0 - smoothstep(0.6, 0.85, q));
@@ -578,7 +1007,7 @@ fn to_linear(c: vec3f) -> vec3f {
 }
 "#;
 
-const IMMEDIATES: usize = 4 * (4 + 6) * 4;
+const IMMEDIATES: usize = 4 * (4 + 7) * 4;
 
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     pipeline_for(device, format, "dither", SHADER, IMMEDIATES)
@@ -641,8 +1070,10 @@ pub fn pipeline_with(
 }
 
 fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8> {
-    let [flags, level, inset, top] = site.data;
-    let (dark, _, tide, shade) = unflag(flags);
+    let [flags, level, dock, pulse] = site.data;
+    let (dark, motion, tide, shade) = unflag(flags);
+    let [inset, top] = unpack_dock(dock);
+    let pulse = unpack_pulse(pulse);
     let blended;
     let palette = match (tide, dark) {
         (false, false) => &LIGHT,
@@ -671,13 +1102,14 @@ fn immediates(site: &rune::render::EffectSite<'_>, t: f32, srgb: bool) -> Vec<u8
         fr,
         fg,
         fb,
-        0.0,
+        f32::from(u8::from(motion == Motion::Live)),
     ];
     for (at, hex) in palette.stops {
         let [r, g, b] = rgb(hex);
         values.extend([r, g, b, at]);
     }
     values.extend([level, inset, top, shade.think]);
+    values.extend([shade.heat, pulse.spike, pulse.activity, pulse.seed as f32]);
     values.iter().flat_map(|v| v.to_ne_bytes()).collect()
 }
 

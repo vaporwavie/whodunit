@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# Publishing out of order would move the stable feed backwards.
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate version and release tooling
+        run: |
+          python3 scripts/release.py validate "$TAG"
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          # The repository toolchain file is the only Rust version pin.
+          rustup show
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - name: Test
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --locked --all-targets
+      - name: Fetch release tools and previous archives
+        run: |
+          bash scripts/fetch-sparkle.sh "$RUNNER_TEMP/sparkle"
+          SPARKLE_TEST_TOOLS="$RUNNER_TEMP/sparkle" python3 -m unittest discover -s scripts -p 'test_*.py'
+          python3 scripts/release.py history --tag "$TAG" --output "$RUNNER_TEMP/archives"
+      - name: Build universal executable
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+          lipo -create target/aarch64-apple-darwin/release/whodunit target/x86_64-apple-darwin/release/whodunit -output "$RUNNER_TEMP/whodunit"
+          lipo -verify_arch arm64 x86_64 "$RUNNER_TEMP/whodunit"
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          : "${APPLE_CERTIFICATE_P12:?Set the Developer ID certificate secret}"
+          : "${APPLE_SIGNING_IDENTITY:?Set the Developer ID Application identity}"
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          PASSWORD=$(openssl rand -hex 32)
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          rm "$RUNNER_TEMP/certificate.p12"
+      - name: Package, sign and notarize
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          : "${SPARKLE_PUBLIC_KEY:?Set the Sparkle public key variable}"
+          : "${APPLE_ID:?Set the notarization Apple ID}"
+          : "${APPLE_TEAM_ID:?Set the notarization team}"
+          : "${APPLE_APP_PASSWORD:?Set the notarization app-specific password}"
+          BUNDLE="$RUNNER_TEMP/Whodunit.app"
+          python3 scripts/release.py package --binary "$RUNNER_TEMP/whodunit" --output "$BUNDLE" --sparkle "$RUNNER_TEMP/sparkle"
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$BUNDLE"
+          xcrun stapler validate "$BUNDLE"
+          codesign --verify --deep --strict "$BUNDLE"
+          spctl --assess --type execute --verbose "$BUNDLE"
+          ditto -c -k --sequesterRsrc --keepParent "$BUNDLE" "$RUNNER_TEMP/archives/Whodunit-${TAG#v}-macos-universal.zip"
+      - name: Generate signed feed and delta patches
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          python3 scripts/release.py appcast --sparkle "$RUNNER_TEMP/sparkle" --tag "$TAG" --archives "$RUNNER_TEMP/archives" --output "$RUNNER_TEMP/publish"
+      - name: Publish release
+        run: |
+          # Keep the old feed live until every new asset has been uploaded. A failed
+          # upload leaves a draft, which a rerun can finish without changing the tag.
+          if gh release view "$TAG" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["isDraft"] else "Refusing to overwrite a published release")' "$RUNNER_TEMP/release.json"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "Whodunit $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/publish/"* --clobber
+          gh release edit "$TAG" --draft=false --latest
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          if [ -f "$RUNNER_TEMP/release.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/release.keychain-db"
+          fi

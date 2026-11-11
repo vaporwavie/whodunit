@@ -660,6 +660,7 @@ pub fn poll(s: &mut Window, t: f64, tx: &mut Tx) -> bool {
         t,
         s.page == Page::Chat && tide_rises(&core),
         tide_mood(&core),
+        live_thought(&core),
         s.shore_motion(),
     );
     changed |= (s.tide.level(), s.tide.shade()) != tide;
@@ -695,16 +696,36 @@ fn tide_rises(core: &Core) -> bool {
             || (core.troubled() && core.exited.is_none() && core.t.week.done.is_none()))
 }
 
+/// The live message's thought while it's the last thing it streams: the tide's net fires on it.
+/// Only its length and a hash of it reach the tide; none of it shows.
+fn live_thought(core: &Core) -> Option<dither::Thought<'_>> {
+    let Some(Item::Assistant {
+        blocks,
+        streaming: true,
+        ..
+    }) = core.t.items.last()
+    else {
+        return None;
+    };
+    let (index, Some(Block::Thinking(text))) = blocks
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, block)| block.is_some())?
+    else {
+        return None;
+    };
+    core.streaming.then_some(dither::Thought {
+        key: core.t.items.len() << 8 | index,
+        text,
+    })
+}
+
 /// The tide's colour: red while the run is in trouble, haze while the live message thinks.
 fn tide_mood(core: &Core) -> dither::Mood {
-    let thinking = matches!(
-        core.t.items.last(),
-        Some(Item::Assistant { blocks, streaming: true, .. })
-            if matches!(blocks.iter().rev().flatten().next(), Some(Block::Thinking(_)))
-    );
     if core.troubled() {
         dither::Mood::Trouble
-    } else if core.streaming && thinking {
+    } else if live_thought(core).is_some() {
         dither::Mood::Thinking
     } else {
         dither::Mood::Working
@@ -803,10 +824,28 @@ pub fn scene_tide(s: &mut Window, level: f32) {
     s.tide.hold(level, dither::Mood::Working);
 }
 
-/// The chat thinking, its tide in and hazed.
+/// The chat thinking, its tide in and hazed, its net firing on a burst of the thought.
 pub fn scene_thinking(s: &mut Window) {
     crate::fixtures::scene_thinking(&s.core);
     s.tide.hold(1.0, dither::Mood::Thinking);
+    let pulse = dither::Pulse {
+        spike: 0.8,
+        activity: 0.5,
+        seed: 412,
+    };
+    s.tide.hold_thought(0.3, pulse);
+}
+
+/// The chat deep in a long thought: the haze heated, the net busy.
+pub fn scene_thinking_deep(s: &mut Window) {
+    crate::fixtures::scene_thinking(&s.core);
+    s.tide.hold(1.0, dither::Mood::Thinking);
+    let pulse = dither::Pulse {
+        spike: 1.0,
+        activity: 0.9,
+        seed: 87,
+    };
+    s.tide.hold_thought(1.0, pulse);
 }
 
 /// The chat retrying after a provider error, its tide in red.

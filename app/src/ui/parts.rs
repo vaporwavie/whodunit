@@ -728,7 +728,6 @@ fn assistant_view<S: HasCore>(
 ) -> El {
     let c = &k.c;
     let mut column = col().w_full().gap(10.0);
-    let latest = blocks.iter().rposition(Option::is_some);
     for (index, block) in blocks.iter().enumerate() {
         match block {
             Some(Block::Text(body)) if !body.is_empty() => {
@@ -740,30 +739,8 @@ fn assistant_view<S: HasCore>(
                     .key(format!("{key}-md{index}"));
                 column = column.child(md);
             }
-            Some(Block::Thinking(body)) => {
-                // The trace's style names the lab, so before the reveal it shows only as dot
-                // art: written while it streams, then sealed at a size that never follows it.
-                let think_key = format!("{key}-think{index}");
-                if core.reveal().is_some() {
-                    if !body.is_empty() {
-                        column = column.child(thinking_block(body, k, think_key));
-                    }
-                } else if streaming && latest == Some(index) {
-                    let thought = stage::thinking(s.stage_motion(), k).key(think_key);
-                    let follows_content =
-                        blocks[..index].iter().flatten().any(|block| match block {
-                            Block::Text(body) | Block::Thinking(body) => !body.is_empty(),
-                            Block::Tool { .. } => true,
-                        });
-                    // Match the tail scanner's 18pt gap, rather than the column's 10pt gap.
-                    column = column.child(if follows_content {
-                        col().pt(8.0).child(thought)
-                    } else {
-                        thought
-                    });
-                } else if !body.is_empty() {
-                    column = column.child(stage::sealed(index, k).key(think_key));
-                }
+            Some(Block::Thinking(body)) if core.reveal().is_some() && !body.is_empty() => {
+                column = column.child(thinking_block(body, k, format!("{key}-think{index}")));
             }
             Some(Block::Tool { id, name, args, .. }) => {
                 column = column.child(match s.diff(id) {
@@ -773,10 +750,6 @@ fn assistant_view<S: HasCore>(
             }
             _ => {}
         }
-    }
-    let dealing = matches!(Stage::of(core), Some(Stage::Dealing { .. }));
-    if streaming && latest.is_none() && !dealing {
-        column = column.child(stage::thinking(s.stage_motion(), k).key(format!("{key}-think0")));
     }
     // A provider error shows as a toast and turns the tide red; its message can name the lab,
     // so it stays out of the transcript until the reveal.

@@ -12,7 +12,7 @@ One task belongs to one chat, but you can work on several tasks at once. ⌘N st
 
 The sidebar lists chats from every folder in three groups:
 
-- **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too. While the open chat is dealt an agent, a deck of dot-art cards shuffles under the transcript and deals one off; while it works, a band of the empty state's dithered water in plain ink (black, or near-white in dark mode) rolls in from below the composer and rests just above it, clear of the chat's edges and of the composer itself. It turns a purple haze, and rides a little higher, while the agent thinks, and red when a provider error or another failure troubles the run; the error itself shows as a toast over the composer (its message waits for `/done`, as it can name the lab). When the turn ends it goes back out, slower than it came. While the window is unfocused, or under Reduce Motion, it simply lands where it belongs.
+- **Working**: the agent is running, classifying or dealing, running a fan-out, or doing shell work or compaction. Background chats show their activity too. While the open chat is dealt an agent, a deck of dot-art cards shuffles under the transcript and deals one off; while it works, a band of the empty state's dithered water in plain ink (black, or near-white in dark mode) rolls in from below the composer and rests just above it, clear of the chat's edges and of the composer itself. It turns a purple haze and rides higher while the agent thinks. Then it acts like a small neural net: each burst of the hidden thought fires needle spikes off the crest and lights wires through the water below, and the purple deepens as the thought runs on. Only the thought's length and a hash of its text reach the water, never the text itself. It turns red when a provider error or another failure troubles the run; the error itself shows as a toast over the composer (its message waits for `/done`, as it can name the lab). It snaps in on a stiff spring with a small overshoot, and when the turn ends it goes back out, slower than it came. While the window is unfocused, or under Reduce Motion, it simply lands where it belongs.
 - **Idle**: the chat is open but isn't working. It may be waiting for your reply, a role or fan-out pick, or a score. A dot marks chats waiting on a dialog. Saved open chats from earlier launches also appear here.
 - **Ended**: you've scored the run and sealed the chat. This section stays at the bottom of the sidebar and starts collapsed; click its heading to show or hide ended chats. Expanded history scrolls separately from open chats.
 
@@ -24,7 +24,7 @@ Click the conversation title, or the selected chat in the sidebar, to rename it 
 
 Code snippets have a copy icon that copies just the code, without Markdown fences. It changes to a checkmark briefly after copying. It works in chat and fan-out answers, including while an answer streams. You can still select and copy part of an answer.
 
-Edits and writes show as diffs. Dot art carries the working state; a status line over the composer appears only for dealing, fan-out progress, retries and compaction. Thinking stays hidden until the run ends, since a trace's style names the lab: while the agent thinks, three thick bands of dithered redaction write themselves, with broad runs and irregular breaks. A finished thought keeps two still bands with a shorter last line, the same size whatever the trace's length. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
+Edits and writes show as diffs. Dot art carries the working state; a status line over the composer appears only for dealing, fan-out progress, retries and compaction. Thinking stays out of the transcript until the run ends, since a trace's style names the lab. The purple tide is the only thinking indicator; there are no redacted placeholder blocks. After the run ends every thought shows in full down a dotted rail, capped at twelve lines that scroll.
 
 The ring next to Send shows how close the chat is to compaction. At 100%, pi compacts on its own: that's the model's window minus `compaction.reserveTokens` from pi's settings (the `whodunit/auto` override wins if you set one). It updates after every response and every batch of tool results, not only when the turn ends. Right after a compaction, pi has no count until the next response, so the ring shows the compaction's own estimate of what it kept, marked `~`. With auto-compaction off, it shows the share of the whole window.
 
@@ -110,12 +110,20 @@ Jev can't see images, so it classifies the text plus a note saying images are at
 
 ## Install
 
-It needs macOS or Linux, and Rust (the version is pinned in `rust-toolchain.toml`). Set up the extension first, as in the [root README](../README.md#setup).
+Set up pi and the extension first, as in the [root README](../README.md#setup).
+
+On macOS 12 or newer, download the universal ZIP from [GitHub Releases](https://github.com/vaporwavie/whodunit/releases/latest). Unzip it and move `Whodunit.app` to `~/Applications` or `/Applications` before opening it. The same app runs on Apple Silicon and Intel.
+
+Release builds check for updates automatically. **Check for Updates…** in the app's menu bar icon checks immediately. You confirm installation and relaunch; Sparkle downloads a signed delta patch when available, with a full-download fallback. Existing source installs need one initial release download to opt in. The background service keeps its current build until you stop it after its work finishes; an update never calls `--service-stop` for you.
+
+To build from source on macOS or Linux, install Rust (pinned in `rust-toolchain.toml`) and Python 3.9 or newer:
 
 ```sh
 cd app
 scripts/bundle.sh    # installs ~/Applications/Whodunit.app (macOS) or ~/.local/bin + a desktop entry (Linux)
 ```
+
+Source builds do not check for public updates. Linux currently uses this source-install path and has no OTA updater. Release signing, GitHub setup and local updater tests are documented in [releases.md](../docs/releases.md).
 
 Launched from Finder, the background service runs your login shell once to find `pi` and your API keys. They stay in memory and are never written to disk. Restart the service after changing that environment.
 
@@ -149,7 +157,7 @@ Click a letter, press A/B/C or 1/2/3, or use ←/→ to switch answers without c
 
 The top list is recent folders, newest first: the ones you opened here and the ones plain pi ran in. The folder pi runs in now isn't listed, since ⌘N already starts a new task there. Below the recents is the current folder's parent, so your other projects are one ↓ away. From a folderless chat, browsing starts at your home folder. Temporary workspaces don't appear in recents.
 
-⏎ works one level at a time. When the picker opens nothing is selected, and ⏎ runs pi in the folder it's browsing. ⏎ on a subfolder, or on Go up, opens that folder with its first subfolder selected, so ⏎ keeps going down, or Go up when it has none. Recent folders skip the step and run pi on the first ⏎.
+⏎ works one level at a time. When the picker opens nothing is selected, and ⏎ runs pi in the folder it's browsing. ⏎ on a subfolder, or on Go up, opens that folder with nothing selected again, so ⏎ or **Open** runs pi there; a subfolder is selected only once ↑↓, a filter or the pointer picks one, and a row the pointer picked lets go when the pointer leaves the list. Recent folders skip the step and run pi on the first ⏎.
 
 Typing filters both lists and selects the first match. **Go up**, always the first row under Browse, opens its parent, as ⌫ or ← on an empty filter does. Hold ⌘ and the button turns into **Select ⌘⏎**: it runs pi in the folder you're browsing, whatever is selected.
 

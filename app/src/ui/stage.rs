@@ -33,7 +33,7 @@ pub enum Stage {
         since: Option<std::time::Instant>,
     },
     Working,
-    /// Working, with the live message thinking: its own thinking block moves too.
+    /// Working, with the live message thinking: the tide turns purple.
     Thinking,
     Fanout(Fanout),
 }
@@ -179,35 +179,10 @@ const DEAL: u8 = 0;
 const RUN: u8 = 2;
 const DONE: u8 = 3;
 const FAIL: u8 = 4;
-const THINK: u8 = 5;
-const SEALED: u8 = 6;
 const RAIL: u8 = 7;
-
-/// Three bands of redacted text, written as the agent thinks.
-const THINK_H: f32 = 66.0;
-/// Two still bands: a thought the run hasn't revealed. Its size never follows the trace's.
-const SEALED_H: f32 = 42.0;
 /// Room left under the tail for the tide's crest, so the answer's last lines stay clear.
-const TIDE_GAP: f32 = 96.0;
+const TIDE_GAP: f32 = 128.0;
 pub const RAIL_W: f32 = 3.0;
-
-/// A thought being written: redacted bands, a cursor, scrolling up as they fill.
-pub fn thinking(motion: Motion, k: &Kit) -> El {
-    slot(k, motion, THINK, 0, 0.0)
-        .w_full()
-        .h(THINK_H)
-        .transition(rune::Transition::none())
-        .label("Thinking")
-}
-
-/// A finished thought before the reveal, redacted. `seed` varies the lines between blocks.
-pub fn sealed(seed: usize, k: &Kit) -> El {
-    slot(k, Motion::Still, SEALED, seed % 64, 0.0)
-        .w_full()
-        .h(SEALED_H)
-        .label("A thought, shown after /done")
-        .help("Thinking shows after /done")
-}
 
 /// The dotted rail down a revealed thought's left edge; pin it to the block's height.
 pub fn rail(k: &Kit) -> El {
@@ -454,61 +429,6 @@ fn bus(pt: vec2f, size: vec2f, cell: vec2u, t: f32, kind: u32) -> vec4f {
     return vec4f(color, lit);
 }
 
-// Broad redaction bands, with occasional breaks rather than letter-sized islands.
-const LINE: f32 = 18.0;
-const PITCH_LINE: f32 = 24.0;
-
-fn redaction(x: f32, line: i32, cell: vec2u, scramble: f32) -> bool {
-    let at = x + f32(line) * 97.0;
-    let segment = floor(at / 64.0);
-    let id = pcg(u32(i32(segment) + 100000) * 13u + u32(line + 100000) * 7u);
-    if (at - segment * 64.0 > 52.0 + 8.0 * u01(id)) { return false; }
-    return u01(cell_hash(cell) ^ pcg(u32(scramble) + 11u)) < 0.92;
-}
-
-// A line's length, as a share of the room: every third line ends a paragraph.
-fn line_len(line: i32, salt: u32) -> f32 {
-    let id = pcg(u32(line + 100000) * 31u + salt);
-    if (line % 3 == 2) { return 0.48 + 0.2 * u01(id); }
-    return 0.82 + 0.18 * u01(id);
-}
-
-fn think(pt: vec2f, size: vec2f, cell: vec2u, t: f32) -> vec4f {
-    let room = size.x;
-    // Start with two redacted lines; a new one writes in as the oldest scrolls away.
-    let progress = t / 1.7;
-    let n = floor(progress) + 2.0;
-    let f = fract(progress);
-    let ease = smoothstep(0.0, 0.14, f);
-    let top = size.y - PITCH_LINE * (n + 1.0) + PITCH_LINE * (1.0 - ease) + (PITCH_LINE - LINE);
-    let q = pt.y - top;
-    let m = floor(q / PITCH_LINE);
-    if (q - m * PITCH_LINE >= LINE || m > n) { return vec4f(0.0); }
-    let line = i32(m);
-    let len = room * line_len(line, 0u);
-    var head = len;
-    if (m == n) { head = len * smoothstep(0.16, 0.9, f); }
-    if (pt.x > head) { return vec4f(0.0); }
-    // The newest writing still glows; lines fade as they scroll off the top.
-    let behind = head - pt.x;
-    let fade = mix(0.4, 1.0, smoothstep(0.0, PITCH_LINE, pt.y));
-    if (m == n && behind < 3.5 && f < 0.92) { return vec4f(p.accent.rgb, fade); }
-    if (!redaction(pt.x, line, cell, floor(t * 3.0))) { return vec4f(0.0); }
-    var glow = 0.0;
-    if (m == n) { glow = 1.0 - smoothstep(0.0, 48.0, behind); }
-    return vec4f(mix(p.base.rgb, p.accent.rgb, glow), (0.95 + 0.05 * glow) * fade);
-}
-
-fn sealed(pt: vec2f, size: vec2f, cell: vec2u) -> vec4f {
-    let m = floor(pt.y / PITCH_LINE);
-    if (pt.y - m * PITCH_LINE >= LINE) { return vec4f(0.0); }
-    let line = i32(m);
-    let salt = u32(p.origin.z) * 7919u;
-    let len = size.x * line_len(line + 1, salt);
-    if (pt.x > len || !redaction(pt.x, line + i32(salt % 997u), cell, 0.0)) { return vec4f(0.0); }
-    return vec4f(p.base.rgb, 0.7);
-}
-
 fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     // Dashes down the edge: two cells on, one off.
     return vec4f(p.base.rgb, select(0.0, 0.9, cell.y % 3u != 2u));
@@ -530,15 +450,13 @@ fn rail(pt: vec2f, cell: vec2u) -> vec4f {
     var ink = vec4f(0.0);
     switch kind {
         case 0u: { ink = deal(pt, size, select(t, p.origin.w, p.origin.w >= 0.0)); }
-        case 5u: { ink = think(pt, size, cell, t); }
-        case 6u: { ink = sealed(pt, size, cell); }
         case 7u: { ink = rail(pt, cell); }
         default: { ink = bus(pt, size, cell, t, kind); }
     }
     // Scanlines: every other row runs dimmer, except on the cards.
     var lit = ink.a * p.extra.x;
     if (kind != 0u && kind != 7u && (cell.y & 1u) == 1u) {
-        lit *= select(0.6, 0.85, kind == 5u || kind == 6u);
+        lit *= 0.6;
     }
     if (lit <= bayer8(cell)) { discard; }
     var color = ink.rgb;

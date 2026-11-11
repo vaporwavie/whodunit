@@ -1,4 +1,4 @@
-//! The menu bar icon that shows Whodunit is running, with Open and Quit under it.
+//! The menu bar icon with Open, Check for Updates (release bundles only), and Quit.
 
 #[cfg(target_os = "macos")]
 mod mac {
@@ -88,6 +88,9 @@ mod mac {
             let menu: *mut AnyObject = msg_send![class!(NSMenu), new];
             let _: () =
                 msg_send![menu, addItem: menu_item("Open Whodunit", sel!(open:), "", target)];
+            if let Some(updater) = crate::updater::start() {
+                let _: () = msg_send![menu, addItem: menu_item("Check for Updates…", sel!(checkForUpdates:), "", updater)];
+            }
             let separator: *mut AnyObject = msg_send![class!(NSMenuItem), separatorItem];
             let _: () = msg_send![menu, addItem: separator];
             let _: () = msg_send![menu, addItem: menu_item("Quit Whodunit", sel!(terminate:), "q", std::ptr::null_mut())];

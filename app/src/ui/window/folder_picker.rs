@@ -53,10 +53,11 @@ pub struct FolderPicker {
     folders: Vec<String>,
     recents: Vec<Recent>,
     /// Index into `targets()`, which run in screen order: recents, go up, subfolders. None means
-    /// the browsed folder itself, which ⏎ then picks.
+    /// the browsed folder itself, which ⏎ and Open then pick. It stays None on opening the picker
+    /// and on entering a folder, until the keyboard, a filter or the pointer moves it.
     highlight: Option<usize>,
-    /// Moved to another folder: its first subfolder gets selected once it's read.
-    moved: bool,
+    /// The pointer put the highlight where it is, so it goes when the pointer leaves the list.
+    pointed: bool,
     now: Option<SystemTime>,
     /// When ⌘ went down, until `CMD_HOLD` turns it into `cmd`.
     cmd_since: Option<Instant>,
@@ -67,7 +68,7 @@ pub struct FolderPicker {
     wakers: Wakers,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Line {
     Heading(&'static str),
     Up,
@@ -162,7 +163,7 @@ impl FolderPicker {
         if let Some(recents) = listing.recents {
             self.recents = recents;
         }
-        self.highlight = self.landing();
+        self.filtered();
         true
     }
 
@@ -215,18 +216,6 @@ impl FolderPicker {
         recents.chain(up).chain(folders).collect()
     }
 
-    /// Where the selection rests with no filter: on the first subfolder after a move, so ⏎ keeps
-    /// going down, or on Go up in an empty folder; on nothing when the picker opens, so ⏎ picks the
-    /// folder it browses.
-    fn landing(&self) -> Option<usize> {
-        if !self.moved {
-            return None;
-        }
-        let targets = self.targets();
-        let first = |wanted: fn(&Line) -> bool| targets.iter().position(wanted);
-        first(|line| matches!(line, Line::Folder(_))).or_else(|| first(|line| *line == Line::Up))
-    }
-
     fn highlighted(&self) -> Option<Line> {
         self.highlight
             .and_then(|index| self.targets().get(index).copied())
@@ -248,8 +237,8 @@ impl FolderPicker {
         self.dir = dir.clone();
         self.folders.clear();
         self.query.clear();
-        self.moved = true;
         self.highlight = None;
+        self.pointed = false;
         self.load(dir, Vec::new);
     }
 
@@ -273,18 +262,34 @@ impl FolderPicker {
             None => self.shown_recents().len() as isize,
         };
         self.highlight = Some((from + delta).clamp(0, last) as usize);
+        self.pointed = false;
     }
 
     fn select(&mut self, highlight: usize) {
-        if self.highlight != Some(highlight) {
-            self.highlight = Some(highlight);
+        self.highlight = Some(highlight);
+        self.pointed = false;
+    }
+
+    fn point(&mut self, highlight: usize) {
+        self.highlight = Some(highlight);
+        self.pointed = true;
+    }
+
+    /// The pointer left the list: a row it highlighted lets go, so Open on the way out picks the
+    /// browsed folder rather than whichever row the pointer crossed last.
+    fn unpoint(&mut self) {
+        if self.pointed {
+            self.highlight = None;
+            self.pointed = false;
         }
     }
 
-    /// While filtering, the first match is selected, so ⏎ goes straight into it.
+    /// While filtering, the first match is selected, so ⏎ goes straight into it. With no filter
+    /// nothing is, so ⏎ picks the browsed folder.
     fn filtered(&mut self) {
+        self.pointed = false;
         if self.query().is_empty() {
-            self.highlight = self.landing();
+            self.highlight = None;
             return;
         }
         self.highlight = self
@@ -533,7 +538,7 @@ fn line_view(p: &FolderPicker, line: Line, target: usize, k: &Kit) -> El {
     }
     // Pointer movement, not hover: rows scrolling under a resting pointer must not steal the
     // keyboard's selection.
-    item.on_pointer_move(move |s: &mut Window, _| s.picker.select(target))
+    item.on_pointer_move(move |s: &mut Window, _| s.picker.point(target))
         .on_press_tx(move |s: &mut Window, tx| {
             s.picker.select(target);
             open(s, tx);
@@ -571,6 +576,11 @@ fn list(p: &FolderPicker, k: &Kit) -> El {
         .w_full()
         .px(8.0)
         .preserve_focus_on_press(true)
+        .on_hover_change(|s: &mut Window, inside, _| {
+            if !inside {
+                s.picker.unpoint();
+            }
+        })
 }
 
 fn footer(p: &FolderPicker, k: &Kit) -> El {
@@ -632,4 +642,46 @@ pub fn build(s: &Window, k: &Kit, layer: &mut Vec<El>) {
         .child(el().h(8.0))
         .child(footer(p, k))
         .build(k, layer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entered(root: &Path) -> FolderPicker {
+        for name in ["a", "b", "a/inner"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let mut picker =
+            FolderPicker::with(root.to_owned(), Vec::new(), Vec::new(), SystemTime::now());
+        picker.browse(root.join("a"));
+        while !picker.poll() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        picker
+    }
+
+    #[test]
+    fn entering_a_folder_selects_nothing_so_open_picks_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut picker = entered(root.path());
+        assert_eq!(picker.folders, ["inner"]);
+        assert_eq!(picker.highlighted(), None);
+        picker.step(1);
+        assert_eq!(picker.highlighted(), Some(Line::Up));
+        picker.step(1);
+        assert_eq!(picker.highlighted(), Some(Line::Folder(0)));
+    }
+
+    #[test]
+    fn a_pointed_row_lets_go_when_the_pointer_leaves() {
+        let root = tempfile::tempdir().unwrap();
+        let mut picker = entered(root.path());
+        picker.point(1);
+        picker.unpoint();
+        assert_eq!(picker.highlighted(), None);
+        picker.step(1);
+        picker.unpoint();
+        assert_eq!(picker.highlighted(), Some(Line::Up));
+    }
 }

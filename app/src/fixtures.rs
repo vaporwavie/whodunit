@@ -336,7 +336,7 @@ pub fn scene_working(shared: &Shared) {
     core.turn_started = Some(std::time::Instant::now());
 }
 
-/// The chat while its agent thinks through a follow-up: the thought writes itself in dot art.
+/// The chat while its agent thinks through a follow-up: only the tide shows it.
 pub fn scene_thinking(shared: &Shared) {
     scene_working(shared);
     let mut core = lock(shared);

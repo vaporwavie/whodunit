@@ -440,13 +440,14 @@ fn dot_art_replaces_the_generic_working_row() {
 }
 
 #[test]
-fn a_live_thought_writes_itself_over_the_tide() {
+fn a_live_thought_only_shows_in_the_purple_tide() {
     let core = core(crate::fixtures::scene_thinking);
     let rt = window(core.clone());
     let last = lock(&core).t.items.len() - 1;
-    assert!(shows(&rt, &format!("/item-{last}-think0")));
+    assert!(!shows(&rt, &format!("/item-{last}-think0")));
+    assert_eq!(tide_mood(&lock(&core)), dither::Mood::Thinking);
     assert!(shows(&rt, "/tide"), "the tide stays through the whole turn");
-    assert!(rt.wake_deadline().is_some(), "the thought keeps drawing");
+    assert!(rt.wake_deadline().is_some(), "the tide keeps drawing");
     assert!(
         rt.elements().iter().all(|e| !e
             .text
@@ -469,8 +470,8 @@ fn the_tide_comes_in_and_goes_out_with_the_turn() {
         core.version += 1;
     };
     work(true);
-    rt.frame(0.1);
-    rt.frame(0.5);
+    rt.frame(0.05);
+    rt.frame(0.05);
     let coming = rt.state.tide.level();
     assert!(
         shows(&rt, "/tide") && coming > 0.0 && coming < 1.0,
@@ -511,28 +512,48 @@ fn the_tide_leaves_room_under_the_tail_and_stays_out_of_a_dealing_or_fanout() {
 }
 
 #[test]
-fn a_sealed_thought_never_shows_its_text_or_its_length() {
-    let height = |body: &str| {
+fn finished_thoughts_have_no_blocks_until_the_reveal() {
+    for body in ["secret".to_owned(), "a long secret trace ".repeat(400)] {
         let core = core(crate::fixtures::scene_chat);
         if let Some(Item::Assistant { blocks, .. }) = lock(&core).t.items.get_mut(1) {
-            blocks[0] = Some(crate::transcript::Block::Thinking(body.into()));
+            blocks[0] = Some(crate::transcript::Block::Thinking(body.clone()));
         }
-        let rt = window(core);
+        let mut rt = window(core.clone());
+        assert!(!shows(&rt, "/item-1-think0"));
         assert!(
             rt.elements()
                 .iter()
                 .all(|e| !e.text.as_deref().unwrap_or_default().contains("secret")),
         );
-        rt.elements()
-            .into_iter()
-            .find(|e| e.path.ends_with("/item-1-think0"))
-            .map(|e| e.rect[3])
-            .unwrap()
+        {
+            let mut core = lock(&core);
+            core.t.week.done = Some(crate::transcript::Done { score: 5 });
+            core.version += 1;
+        }
+        rt.frame(0.016);
+        assert!(shows(&rt, "/item-1-think0"));
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some(body.trim())),
+            "the full trace appears after the reveal"
+        );
+    }
+}
+
+#[test]
+fn an_empty_streaming_message_has_no_thinking_placeholder() {
+    let core = core(crate::fixtures::scene_working);
+    let last = {
+        let mut core = lock(&core);
+        if let Some(Item::Assistant { blocks, .. }) = core.t.items.last_mut() {
+            blocks.clear();
+        }
+        core.t.items.len() - 1
     };
-    assert_eq!(
-        height("secret"),
-        height(&"a long secret trace ".repeat(400))
-    );
+    let rt = window(core);
+    assert!(!shows(&rt, &format!("/item-{last}-think0")));
+    assert!(shows(&rt, "/tide"));
 }
 
 #[test]

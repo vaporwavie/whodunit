@@ -11,6 +11,8 @@ pub mod service;
 pub mod sessions;
 pub mod sprites;
 pub mod transcript;
+#[cfg(target_os = "macos")]
+mod updater;
 pub mod ui {
     pub mod design_system;
     pub mod develop;

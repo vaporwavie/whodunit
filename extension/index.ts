@@ -363,8 +363,17 @@ async function fanOut(
 	};
 }
 
+let ownsFooter = false;
+
+function clearFooter(ctx: ExtensionContext): void {
+	if (!ctx.hasUI || !ownsFooter) return;
+	ownsFooter = false;
+	ctx.ui.setFooter(undefined);
+}
+
 function setFooter(ctx: ExtensionContext, label: () => string): void {
 	if (!ctx.hasUI) return;
+	ownsFooter = true;
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
 		return {
@@ -504,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 		if (findEntry<Deal>(ctx, DEAL) && !findEntry(ctx, DONE) && !findEntry(ctx, SWITCH)) {
 			pi.appendEntry(SWITCH, { to: `${event.model?.provider}/${event.model?.id}`, at: new Date().toISOString() });
 		}
-		if (ctx.hasUI) ctx.ui.setFooter(undefined);
+		clearFooter(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {

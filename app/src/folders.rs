@@ -20,7 +20,7 @@ const RECENT_SHOWN: usize = 6;
 const FOLDER_LIMIT: usize = 400;
 
 /// Folders opened from the app plus folders plain pi ran in (each session file's header names its
-/// `cwd`), newest first, existing ones only.
+/// `cwd`), home first, then newest first, existing ones only.
 pub fn recents(config: &AppConfig) -> Vec<Recent> {
     let mut latest: HashMap<PathBuf, SystemTime> = HashMap::new();
     let mut note = |path: PathBuf, at: SystemTime| {
@@ -41,7 +41,8 @@ pub fn recents(config: &AppConfig) -> Vec<Recent> {
         .filter(|(path, _)| !config::is_temporary(path) && path.is_dir())
         .map(|(path, at)| Recent { path, at })
         .collect();
-    recents.sort_by_key(|r| std::cmp::Reverse(r.at));
+    let home = config::home();
+    recents.sort_by_key(|r| (r.path != home, std::cmp::Reverse(r.at)));
     recents.truncate(RECENT_SHOWN);
     recents
 }

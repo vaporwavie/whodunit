@@ -1,5 +1,8 @@
 # whodunit
 
+> [!NOTE]
+> This experiment is completed! Check [RESULTS.md](RESULTS.md) to read more about it.
+
 > The phrase "whodunit" is a grammatical abomination. Please use the proper term, a "who has done this".
 >
 > — Captain Raymond Holt
@@ -69,19 +72,6 @@ From my `roles.json` for the first trial (2026-11-08 to 2026-11-11):
 | `scribe` (fan-out) | Prose: posts, docs, messages, copy | high | Opus 5.5, GPT-6 Astra, Gemini 4 Argon |
 
 Model IDs: `anthropic/claude-opus-5-5`, `openai/gpt-6.1-sol`, `openai/gpt-6-astra`, `google/gemini-4-argon` and `fireworks/accounts/fireworks/models/kimi-k3p1-pro`. `extension/roles.example.json` is this same config.
-
-## Result
-
-The first trial ran from 2026-11-08 to 2026-11-11: 65 rated runs and 3 fan-outs, $147 at list price.
-
-| Role | Result |
-|---|---|
-| `builder` | Opus 5.5 wins, 4.89 against GPT-6.1 Sol's 4.50 over 18 runs each, at three times the cost per run |
-| `brainiac` | A tie at 5.00 between Opus 5.5 (7 runs) and GPT-6 Astra (9 runs) |
-| `errand-boy` | No loser: all four contenders nailed every run, and GPT-6.1 Sol did it cheapest |
-| `scout`, `scribe` | Too few fan-outs to call (2 and 1) |
-
-56 of the 65 runs scored a 5, so the 5-to-1 card separated the models less than I expected. One Opus run on Linux is left out because it failed on a bad API key before reaching the model.
 
 ## What's here
 
